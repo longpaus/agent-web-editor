@@ -9,18 +9,57 @@ import type {
   OpenRuntimeSession,
   RuntimeEvent,
 } from "../packages/agent-runtime/src/index.js";
+import {
+  TranscriptCursorSchema,
+  TranscriptPageSchema,
+  type TranscriptItem,
+  type TranscriptPageRequest,
+} from "../packages/contracts/src/index.js";
 
 import { buildServer, type WorkspaceServer } from "../apps/server/src/app.js";
 import { parseConfig } from "../apps/server/src/config.js";
 
 class BrowserSession implements OpenRuntimeSession {
+  public items: TranscriptItem[] = [];
   public constructor(public readonly id: string) {}
+  private boundaryCursor(index: number) {
+    return TranscriptCursorSchema.parse(
+      `boundary-${String(index).padStart(12, "0")}`,
+    );
+  }
+  private resumeCursor(start: number, end: number) {
+    return TranscriptCursorSchema.parse(
+      `resume-${String(start).padStart(12, "0")}-${String(end).padStart(12, "0")}`,
+    );
+  }
+  private page(start: number, end: number) {
+    return TranscriptPageSchema.parse({
+      items: this.items.slice(start, end),
+      olderCursor: start === 0 ? null : this.boundaryCursor(start),
+      newerCursor: end === this.items.length ? null : this.boundaryCursor(end),
+      resumeCursor: this.resumeCursor(start, end),
+      atLatest: end === this.items.length,
+    });
+  }
   public snapshot() {
+    const end = this.items.length;
+    const start = Math.max(0, end - 100);
     return Promise.resolve({
       sessionId: this.id,
-      transcript: [],
+      transcriptPage: this.page(start, end),
       diagnostics: [],
     });
+  }
+  public transcriptPage(request: TranscriptPageRequest) {
+    const numbers = request.cursor.match(/\d{12}/g)?.map(Number) ?? [];
+    const first = numbers[0] ?? 0;
+    if (request.direction === "resume")
+      return Promise.resolve(this.page(first, numbers[1] ?? first));
+    if (request.direction === "older")
+      return Promise.resolve(this.page(Math.max(0, first - 100), first));
+    return Promise.resolve(
+      this.page(first, Math.min(this.items.length, first + 100)),
+    );
   }
   public prompt() {
     return Promise.resolve({
@@ -52,15 +91,24 @@ class BrowserSession implements OpenRuntimeSession {
 
 class BrowserRuntime implements AgentRuntime {
   private nextId = 1;
+  private readonly sessions = new Map<string, BrowserSession>();
+  public get latestSession(): BrowserSession {
+    const session = [...this.sessions.values()].at(-1);
+    if (session === undefined) throw new Error("No browser session exists");
+    return session;
+  }
   public discover() {
     return Promise.resolve({ sessions: [], diagnostics: [] });
   }
   public create() {
     const id = `10000000-0000-4000-8000-${String(this.nextId++).padStart(12, "0")}`;
+    this.sessions.set(id, new BrowserSession(id));
     return Promise.resolve({ sessionId: id });
   }
   public open(_projectPath: string, sessionId: string) {
-    return Promise.resolve(new BrowserSession(sessionId));
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) throw new Error("Browser session was not found");
+    return Promise.resolve(session);
   }
 }
 
@@ -87,6 +135,7 @@ let server: WorkspaceServer;
 let root: string;
 let projectPath: string;
 let launchUrl: string;
+const browserRuntime = new BrowserRuntime();
 
 test.beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "pi-web-e2e-"));
@@ -102,7 +151,7 @@ test.beforeAll(async () => {
   let browseCount = 0;
   server = await buildServer({
     config,
-    runtime: new BrowserRuntime(),
+    runtime: browserRuntime,
     directoryPicker: {
       chooseDirectory: () => {
         const currentBrowse = browseCount++;
@@ -202,4 +251,32 @@ test("adds a project, creates a route-addressable thread, and discloses direct e
   await expect(inspector).toBeVisible();
   const restored = await inspector.boundingBox();
   expect(restored?.width).toBeCloseTo(afterResize?.width ?? 0, 0);
+});
+
+test("bounds a deterministic 10,000-item thread while paging older history", async ({
+  page,
+}) => {
+  browserRuntime.latestSession.items = Array.from(
+    { length: 10_000 },
+    (_, index): TranscriptItem => ({
+      id: `message-${String(index).padStart(5, "0")}`,
+      kind: "message",
+      role: index % 2 === 0 ? "user" : "assistant",
+      text: `History message ${String(index)}`,
+      timestamp: null,
+    }),
+  );
+  const workspace = await server.workspaceContext.workspace.list();
+  const project = workspace.projects[0];
+  const thread = workspace.threads[0];
+  if (project === undefined || thread === undefined)
+    throw new Error("Long-history thread was not created");
+
+  await page.goto(`${launchUrl}projects/${project.id}/threads/${thread.id}`);
+  await expect(page.getByText("History message 9999")).toBeVisible();
+  await expect(page.locator("[data-transcript-item-id]")).toHaveCount(100);
+
+  for (let pageIndex = 0; pageIndex < 5; pageIndex += 1)
+    await page.getByRole("button", { name: "Load earlier messages" }).click();
+  await expect(page.locator("[data-transcript-item-id]")).toHaveCount(500);
 });

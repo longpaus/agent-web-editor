@@ -11,6 +11,9 @@ import {
   StartThreadRequestSchema,
   GitBranchSchema,
   TerminalClientFrameSchema,
+  TranscriptPageRequestSchema,
+  TranscriptPageSchema,
+  ThreadSnapshotSchema,
 } from "./index.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
@@ -111,6 +114,48 @@ describe("wire contracts", () => {
     expect(RelativePathSchema.parse("src/features/App.tsx")).toBe(
       "src/features/App.tsx",
     );
+  });
+
+  it("parses bounded transcript pages and strict cursor requests", () => {
+    const cursor = "a".repeat(32);
+    const page = TranscriptPageSchema.parse({
+      items: [
+        {
+          id: "message-1",
+          kind: "message",
+          role: "assistant",
+          text: "Ready",
+          timestamp: null,
+        },
+      ],
+      olderCursor: null,
+      newerCursor: cursor,
+      resumeCursor: cursor,
+      atLatest: false,
+    });
+    expect(page.items).toHaveLength(1);
+    expect(
+      TranscriptPageRequestSchema.parse({ cursor, direction: "resume" }),
+    ).toEqual({ cursor, direction: "resume" });
+    expect(
+      TranscriptPageRequestSchema.safeParse({
+        cursor,
+        direction: "older",
+        limit: 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      TranscriptPageSchema.safeParse({
+        ...page,
+        items: Array(101).fill(page.items[0]),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires snapshot version 2 with a bounded latest page", () => {
+    expect(
+      ThreadSnapshotSchema.safeParse({ version: 1, transcript: [] }).success,
+    ).toBe(false);
   });
 
   it("does not coerce terminal dimensions", () => {

@@ -1,4 +1,8 @@
-import type { TranscriptItem } from "@pi-web/contracts";
+import type {
+  TranscriptItem,
+  TranscriptPage,
+  TranscriptPageRequest,
+} from "@pi-web/contracts";
 
 export type RuntimeFailureCode =
   | "unavailable"
@@ -8,7 +12,8 @@ export type RuntimeFailureCode =
   | "rejected"
   | "provider"
   | "tool"
-  | "interrupted";
+  | "interrupted"
+  | "stale";
 
 export class RuntimeFailure extends Error {
   public constructor(
@@ -31,9 +36,14 @@ export interface RuntimeSessionDescriptor {
   creationId?: string;
 }
 
+export interface TranscriptPageLimits {
+  readonly maxItems: number;
+  readonly targetBytes: number;
+}
+
 export interface RuntimeSnapshot {
   sessionId: string;
-  transcript: TranscriptItem[];
+  transcriptPage: TranscriptPage;
   diagnostics: string[];
 }
 
@@ -68,7 +78,11 @@ export type PromptRecovery =
 
 export interface OpenRuntimeSession {
   readonly id: string;
-  snapshot(): Promise<RuntimeSnapshot>;
+  snapshot(limits: TranscriptPageLimits): Promise<RuntimeSnapshot>;
+  transcriptPage(
+    request: TranscriptPageRequest,
+    limits: TranscriptPageLimits,
+  ): Promise<TranscriptPage>;
   prompt(
     text: string,
     dispatch?: RuntimePromptDispatch,

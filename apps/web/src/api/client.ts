@@ -11,12 +11,15 @@ import {
   RunMutationResponseSchema,
   SessionsResponseSchema,
   StartThreadResponseSchema,
+  ThreadLiveMetadataSchema,
   ThreadMutationResponseSchema,
   ThreadSnapshotSchema,
+  TranscriptPageSchema,
   WorkspacePreflightResponseSchema,
   type ProjectId,
   type RunId,
   type ThreadId,
+  type TranscriptPageRequest,
 } from "@pi-web/contracts";
 import { z } from "zod";
 
@@ -170,6 +173,25 @@ export async function getSnapshot(projectId: ProjectId, threadId: ThreadId) {
   return await request(
     `/api/projects/${projectId}/threads/${threadId}`,
     ThreadSnapshotSchema,
+  );
+}
+export async function getThreadLiveMetadata(
+  projectId: ProjectId,
+  threadId: ThreadId,
+) {
+  return await request(
+    `/api/projects/${projectId}/threads/${threadId}/metadata`,
+    ThreadLiveMetadataSchema,
+  );
+}
+export async function getTranscriptPage(
+  projectId: ProjectId,
+  threadId: ThreadId,
+  page: TranscriptPageRequest,
+) {
+  return await request(
+    `/api/projects/${projectId}/threads/${threadId}/transcript?cursor=${encodeURIComponent(page.cursor)}&direction=${page.direction}`,
+    TranscriptPageSchema,
   );
 }
 export async function prompt(

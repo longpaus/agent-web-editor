@@ -29,7 +29,8 @@ For a prompt, the coordinator reserves the key while Pi preflight runs, buffers 
 A thread snapshot contains:
 
 - thread/project display metadata and capabilities;
-- parsed native transcript and current streaming projection;
+- a parsed count/byte-bounded latest native transcript page and current bounded
+  streaming projection;
 - current and last run records;
 - unread/viewed metadata;
 - `epoch` and `highWaterSequence`; and
@@ -61,7 +62,14 @@ Duplicate events are harmless: the browser reducer keys by epoch/sequence and st
 ## Browser behavior
 
 - Route selection determines which thread snapshot is displayed; each tab owns its route and subscription.
-- Query/cache state is transient. Durable selection fallback comes from the server's project metadata.
+- Query/cache state is transient. Only the active thread retains a contiguous
+  five-page transcript window. Inactive visited threads retain a tiny
+  follow-or-anchor bookmark, not transcript pages; durable selection fallback
+  comes from server project metadata.
+- Streaming projections update and follow the viewport only near latest. While
+  reading older history, page-free run metadata refreshes and incoming content
+  does not move the anchor. Snapshot refreshes are coalesced and fixed-ID stream
+  updates do not trigger full transcript refetches.
 - Submitting from an active thread steers its current run immediately. Text left unsent remains a versioned local draft; there is no wait mode, hidden durable queue, or Pi follow-up queue.
 - Opening a completed result sends an idempotent viewed command only after that result is rendered as the selected thread. A completion that arrives while already selected is acknowledged without durable unread.
 
@@ -76,7 +84,9 @@ Duplicate events are harmless: the browser reducer keys by epoch/sequence and st
 
 ## Failure and recovery
 
-Malformed frames close the subscription with a stable protocol error. An expired cursor or event gap resets from a snapshot. Snapshot failure is scoped to its thread and displayed; no partial browser cache is promoted to authoritative. Duplicate command retries return stored outcomes. Restart changes epochs, interrupts non-reconnectable runs, and reconstructs without resubmitting prompts.
+Malformed frames close the subscription with a stable protocol error. An
+expired event cursor or stale authenticated history/resume cursor resets from a
+bounded latest snapshot. Snapshot failure is scoped to its thread and displayed; no partial browser cache is promoted to authoritative. Duplicate command retries return stored outcomes. Restart changes epochs, interrupts non-reconnectable runs, and reconstructs without resubmitting prompts.
 
 ## Required tests
 

@@ -1,20 +1,20 @@
 # Scalable conversation history
 
-**Current version:** None
+**Current version:** 2
 
-**Proposed version:** 1
+**Proposed version:** None
 
-**Proposal status:** Approved
+**Proposal status:** None
 
-**Implementation status:** Not started
+**Implementation status:** Current
 
-**Product approval:** Approved by the user on 2026-08-16 for specification version 1
+**Product approval:** Not applicable — no proposed revision
 
 **Subsystem:** Conversation history loading, navigation, and viewport behavior
 
 **Last verified:** 2026-08-16
 
-**Related ExecPlans:** [Scalable conversation history](../exec-plans/active/2026-08-16-scalable-conversation-history.md)
+**Related ExecPlans:** [Scalable conversation history](../exec-plans/completed/2026-08-16-scalable-conversation-history.md)
 
 **Related specifications:** [Initial agent workspace](initial-workspace.md)
 
@@ -31,37 +31,49 @@ independent extension of the initial workspace. Native Pi history remains the
 authoritative durable source; this capability does not create another transcript
 store or alter native sessions.
 
-## Current contract
+## Current contract (v2)
 
-There is no Current contract for scalable history behavior. The implemented
-workspace requests one snapshot containing the complete translated active-branch
-transcript, validates the complete array in the browser, renders every visible
-message and activity row, and initially leaves a long transcript at its top.
-Snapshot invalidation can repeat that full work during live runs. The transcript
-uses the browser's default prominent scrollbar.
+Conversation history is a bounded view over authoritative native Pi history.
+The first view opens at latest, in-tab thread switching restores a transient
+follow-or-anchor bookmark, older retained history is available through explicit
+paging, and only one bounded active transcript window is retained in the
+browser.
 
-## Proposed revision v1
+### SCH-01 — Resume each thread at its own reading position
 
-### SCH-01 — Open at the latest conversation edge
+The first opening or a full browser reload of a non-empty thread places the
+conversation viewport at its latest edge before the user has to scroll. When the
+user switches between threads within the current browser tab, each thread
+instead resumes its own prior viewport state:
 
-Opening, reloading, or switching to a non-empty thread places the conversation
-viewport at its latest edge before the user has to scroll. Items remain in
-chronological document and accessibility order; the application does not reverse
-the transcript to produce this result. An empty thread continues to show its
-empty state.
+- a thread left while following the latest edge reopens at the current latest
+  edge, including agent output that arrived while it was not selected; and
+- a thread left while reading older content restores the same visible item and
+  offset without being moved by newer output.
+
+The remembered state is transient browser UI state, not transcript data. It is
+not synchronized across tabs or devices and need not survive closing or fully
+reloading the tab. If its history position is no longer compatible with the
+active native branch or current server runtime, the application visibly resets
+to the authoritative latest edge rather than guessing.
+
+Items remain in chronological document and accessibility order; the application
+does not reverse the transcript to produce this behavior. An empty thread
+continues to show its empty state.
 
 ### SCH-02 — Follow live work without taking control from the user
 
 While the viewport is at or near the latest edge, appended or updated live
-content remains visible automatically. Once the user scrolls away to read older
-content, incoming content must not move that reading position. The interface
-then provides a clear, keyboard-accessible way to return to the latest content;
-using it resumes live following.
+content remains visible automatically. This includes growth of an in-progress
+agent message, not only insertion of a new row. Once the user scrolls away to
+read older content, incoming content must not move that reading position. The
+interface then provides a clear, keyboard-accessible way to return to the latest
+content; using it resumes live following and updates that thread's remembered
+state.
 
-Loading older content, refreshing a background page, and receiving live events
-must not cause an unrelated viewport jump. Changing to another thread always
-uses that thread's latest-edge initial behavior rather than retaining the prior
-thread's scroll position.
+Loading older content, refreshing a background page, receiving live events, and
+restoring a remembered thread position must not cause an unrelated viewport
+jump.
 
 ### SCH-03 — Progressive access to complete retained history
 
@@ -120,34 +132,40 @@ terminal retain their own appropriate scrolling affordances.
 
 ## Acceptance criteria
 
-1. Opening, reloading, or switching to a long thread shows its latest content
+1. First opening or fully reloading a long thread shows its latest content
    without manual scrolling while preserving chronological DOM order.
-2. Live output follows while the user is near the latest edge; scrolling upward
-   prevents subsequent updates from moving the viewport, and an accessible
-   return-to-latest control restores following.
-3. Requesting an older page preserves the previously visible item and clearly
+2. Switching away and back restores that thread's visible item and offset when
+   it was left in reading mode; a thread left in follow mode instead shows the
+   current latest agent output.
+3. Live output and in-place streaming growth follow while the user is near the
+   latest edge; scrolling upward prevents subsequent updates from moving the
+   viewport, and an accessible return-to-latest control restores following.
+4. Requesting an older page preserves the previously visible item and clearly
    reports loading, end-of-history, and retryable failure states.
-4. Repeated older/newer paging can reach every displayable item on the active
+5. Repeated older/newer paging can reach every displayable item on the active
    native branch without modifying the native session.
-5. A stale or branch-incompatible cursor produces a scoped reset/recovery state
-   rather than duplicate, missing-without-notice, or mixed-branch rows.
-6. With a deterministic 10,000-item history, the initial response, browser page
-   cache, and mounted transcript rows remain within documented implementation
-   bounds independent of the total item count.
-7. Live updates and reconnect recovery refresh only the bounded latest
+6. A stale or branch-incompatible paging or restoration cursor produces a
+   scoped latest-edge reset rather than duplicate, missing-without-notice, or
+   mixed-branch rows.
+7. With a deterministic 10,000-item history, the initial response, active
+   browser page window, and mounted transcript rows remain within documented
+   implementation bounds independent of the total item count and previously
+   visited thread count.
+8. Live updates and reconnect recovery refresh only the bounded latest
    projection and do not repeatedly transfer the complete retained history.
-8. The transcript scrollbar is visually quieter at rest and remains visible on
+9. The transcript scrollbar is visually quieter at rest and remains visible on
    hover or interaction on supported browsers; other scroll surfaces are
    unchanged.
-9. Malformed, oversized, stale, unknown-thread, and cross-thread paging values
-   fail through parsed boundaries with safe scoped errors and no native path or
-   session identifier disclosure.
+10. Malformed, oversized, stale, unknown-thread, and cross-thread paging or
+    restoration values fail through parsed boundaries with safe scoped errors
+    and no native path or session identifier disclosure.
 
 ## Non-goals
 
 - Reversing transcript or accessibility order
 - Full-history search or browser Find support for unloaded pages
-- Remembering an exact transcript scroll position across browser restarts
+- Remembering an exact transcript scroll position across full tab reloads,
+  browser restarts, tabs, or devices
 - Pi session-tree navigation or displaying abandoned branches
 - Copying the complete transcript into application metadata or browser storage
 - Changing Pi compaction, retention, deletion, or native JSONL formats
@@ -157,6 +175,7 @@ terminal retain their own appropriate scrolling affordances.
 
 ## Open product questions
 
-None. The proposed behavior uses a bounded latest page, explicit progressive
-history controls, a bounded browser page window, polite live following, and a
-visible return-to-latest action.
+None. The current behavior uses a transient per-thread follow-or-anchor
+bookmark, a bounded latest page, explicit progressive history controls, one
+bounded active browser page window, polite live following, and a visible
+return-to-latest action.

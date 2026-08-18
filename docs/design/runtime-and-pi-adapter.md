@@ -19,7 +19,8 @@ The server owns live SDK-neutral runtimes while `packages/pi-adapter` exclusivel
 `packages/agent-runtime` defines:
 
 - discover/create/open persistent sessions by opaque runtime-session ID;
-- obtain an authoritative SDK-neutral transcript snapshot;
+- obtain an authoritative SDK-neutral bounded latest transcript page and
+  authenticated directional/resume pages;
 - submit a prompt with distinct preflight acceptance and eventual settlement;
 - steer an active run, stop it, and dispose runtime ownership;
 - subscribe to normalized message/tool/lifecycle events; and
@@ -33,7 +34,14 @@ No Pi class, event, content block, path, or generic SDK type crosses the adapter
 - Discovery uses `SessionManager.list(canonicalProjectPath)`. The adapter parses descriptors, confirms cwd ownership, and omits native paths from returned DTOs.
 - Opening resolves the stored UUID against a fresh authorized listing before passing the private path to Pi.
 - Import adds application metadata pointing to that UUID without opening for rewrite, renaming, or copying JSONL.
-- Snapshot translation supports documented v1-v3 sessions, active branches, compaction, model/thinking changes, messages, tool results, bash execution, and safe custom entries. Malformed/unsupported data produces a thread-scoped adapter diagnostic.
+- Snapshot translation supports documented v1-v3 sessions, active branches,
+  compaction, model/thinking changes, messages, tool results, bash execution,
+  and safe custom entries. Translation is reused while the ordered native branch
+  is unchanged and rebuilt on append/divergence. Pages contain at most 100 items
+  and target 1 MiB, with a one-item progress exception. Runtime-local HMAC
+  cursors preserve append-compatible older/resume positions and reject forged,
+  cross-runtime, wrong-purpose, or divergent positions. Malformed/unsupported
+  data produces a thread-scoped adapter diagnostic.
 
 ## Pi resources, trust, and tools
 

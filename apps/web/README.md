@@ -7,7 +7,10 @@ React workspace for persistent local projects and Pi-backed threads.
 React Router owns project/thread selection, TanStack Query owns parsed HTTP
 state, and live WebSocket events invalidate authoritative thread snapshots. The
 UI provides the nested project sidebar, native Browse-based project
-registration, a Codex-style inline new-chat composer with clean-worktree,
+registration, a bounded five-page conversation window with explicit history
+paging, in-tab per-thread reading-position restoration, latest-edge live
+following and return-to-latest recovery, a Codex-style inline new-chat composer
+with clean-worktree,
 local-change-transfer, or local-checkout choices, Codex-style thread context
 and hover archival actions, compact inline run indicators, transcript and run
 controls, a thread-scoped Files/Changes/Terminal inspector, direct-execution
@@ -17,7 +20,9 @@ selected tab, and width are restored from a versioned, parsed device-local
 preference. Selection and registration are
 combined on the server, so the native selected path never enters browser state.
 
-All transport values are parsed by `@pi-web/contracts`. The browser never
+Only the active thread retains transcript pages; each page contains at most 100
+items and targets 1 MiB, while inactive threads retain only tiny follow-or-anchor
+bookmarks. All transport values are parsed by `@pi-web/contracts`. The browser never
 imports server/runtime/adapter code and never receives canonical project roots
 or native session paths. Markdown raw HTML and images are disabled. xterm is
 used only for the explicit user-controlled local shell.

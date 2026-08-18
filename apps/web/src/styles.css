@@ -384,10 +384,52 @@ a:focus-visible {
   background: #211e18;
   font-size: 0.74rem;
 }
-.transcript {
+.transcript-shell {
+  position: relative;
   flex: 1;
+  min-height: 0;
+}
+.transcript {
+  height: 100%;
   overflow: auto;
   padding: 1.5rem max(1rem, 8%);
+  scrollbar-color: #4b5363 transparent;
+  scrollbar-width: thin;
+}
+.transcript::-webkit-scrollbar {
+  width: 8px;
+}
+.transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+.transcript::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #4b5363;
+  background-clip: padding-box;
+}
+.transcript:hover::-webkit-scrollbar-thumb,
+.transcript:focus-within::-webkit-scrollbar-thumb {
+  background: #737e91;
+  background-clip: padding-box;
+}
+.transcript-content {
+  min-height: 100%;
+}
+.history-control {
+  display: block;
+  margin: 0 auto 1.25rem;
+}
+.jump-latest {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1rem;
+  z-index: 2;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  background: var(--surface-2);
+  box-shadow: 0 0.35rem 1rem rgb(0 0 0 / 35%);
 }
 .message {
   max-width: 54rem;

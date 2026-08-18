@@ -7,7 +7,9 @@ Loopback-only Fastify process for the local agent workspace.
 The server owns parsed startup configuration, credential-free loopback request
 policy, Drizzle/SQLite metadata and migrations, project/thread/run
 coordination, durable thread/worktree provisioning, Pi adapter composition,
-live WebSockets, bounded thread-workspace file and Git inspection,
+live WebSockets, count/byte-bounded transcript snapshots and authenticated
+history/resume paging with page-free run metadata, bounded thread-workspace file
+and Git inspection,
 execution-scope PTYs, and the macOS/Windows native project-directory
 chooser. The chooser is server-owned and injectable; bounded native JSON output
 is parsed before existing project canonicalization, and selected paths are not

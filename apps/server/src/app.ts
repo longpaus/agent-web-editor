@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import staticPlugin from "@fastify/static";
 import websocket from "@fastify/websocket";
-import type { AgentRuntime } from "@pi-web/agent-runtime";
+import { RuntimeFailure, type AgentRuntime } from "@pi-web/agent-runtime";
 import type { RawData } from "ws";
 import {
   ArchiveThreadRequestSchema,
@@ -21,6 +21,7 @@ import {
   SteerRequestSchema,
   TerminalClientFrameSchema,
   ThreadIdSchema,
+  TranscriptPageRequestSchema,
   UpdateProjectRequestSchema,
 } from "@pi-web/contracts";
 import { PiAgentRuntime } from "@pi-web/pi-adapter";
@@ -89,6 +90,12 @@ function safeError(error: unknown): {
       status: 400,
       code: "invalid_request",
       message: "The request is malformed.",
+    };
+  if (error instanceof RuntimeFailure && error.code === "stale")
+    return {
+      status: 409,
+      code: "stale_transcript_cursor",
+      message: "The saved transcript position is no longer available.",
     };
   if (error instanceof ReceiptConflictError)
     return {
@@ -397,6 +404,25 @@ export async function buildServer(
     const params = threadParamsSchema.parse(request.params);
     return await workspace.snapshot(params.projectId, params.threadId);
   });
+  server.get(
+    "/api/projects/:projectId/threads/:threadId/metadata",
+    (request) => {
+      const params = threadParamsSchema.parse(request.params);
+      return workspace.threadLiveMetadata(params.projectId, params.threadId);
+    },
+  );
+  server.get(
+    "/api/projects/:projectId/threads/:threadId/transcript",
+    async (request) => {
+      const params = threadParamsSchema.parse(request.params);
+      const query = TranscriptPageRequestSchema.parse(request.query);
+      return await workspace.transcriptPage(
+        params.projectId,
+        params.threadId,
+        query,
+      );
+    },
+  );
 
   server.post(
     "/api/projects/:projectId/threads/:threadId/prompt",

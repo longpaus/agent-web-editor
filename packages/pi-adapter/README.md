@@ -6,8 +6,12 @@ The adapter uses a bounded tool-free lightweight-model request to suggest a
 first-prompt title when an authenticated same-provider model is available. It
 also discovers sessions for a canonical execution root, returns path-free
 session descriptors, resolves stored UUIDs through a fresh authorized listing,
-opens/creates native persistent sessions, translates active history and live Pi
-events into SDK-neutral DTOs, and owns prompt preflight, steering, abort, and
+opens/creates native persistent sessions, indexes and reuses unchanged translated active history, incrementally extends
+strict appends, rebuilds divergent branches, and serves count/byte-bounded
+latest, directional, and
+resume pages through runtime-local authenticated opaque cursors, projects one
+bounded in-progress assistant update, translates live Pi events into SDK-neutral
+DTOs, and owns prompt preflight, steering, abort, and
 runtime disposal. New blank sessions are atomically materialized from narrowly
 parsed `SessionManager` state because Pi SDK 0.84.2 otherwise delays its first
 JSONL write until an assistant message exists.

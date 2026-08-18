@@ -18,16 +18,20 @@ import {
   RunSchema,
   StartThreadResponseSchema,
   ThreadIdSchema,
+  ThreadLiveMetadataSchema,
   ThreadSnapshotSchema,
+  TranscriptPageSchema,
   ThreadWorkspaceRequestSchema,
   ThreadSummarySchema,
   type Project,
   type ProjectId,
   type Run,
   type ThreadId,
+  type ThreadLiveMetadata,
   type ThreadSnapshot,
   type ThreadSummary,
-  type TranscriptItem,
+  type TranscriptPage,
+  type TranscriptPageRequest,
   type WorktreeId,
 } from "@pi-web/contracts";
 import { z } from "zod";
@@ -45,6 +49,16 @@ import {
   ThreadExecutionContextResolver,
   type ThreadExecutionContext,
 } from "./execution-context.js";
+
+const transcriptPageLimits = {
+  maxItems: 100,
+  targetBytes: 1_048_576,
+} as const;
+
+interface PendingRuntimeOpen {
+  cancelled: boolean;
+  promise: Promise<OpenRuntimeSession>;
+}
 
 interface PendingPreflight {
   projectId: ProjectId;
@@ -124,6 +138,10 @@ export class WorkspaceService {
   private readonly runtimes = new Map<
     ThreadId,
     { runtime: OpenRuntimeSession; unsubscribe: () => void }
+  >();
+  private readonly pendingRuntimeOpens = new Map<
+    ThreadId,
+    PendingRuntimeOpen
   >();
   private readonly activeThreads = new Set<ThreadId>();
   private readonly preflightPrompts = new Map<ThreadId, PendingPreflight>();
@@ -985,16 +1003,39 @@ export class WorkspaceService {
   private async openRuntime(thread: ThreadRecord): Promise<OpenRuntimeSession> {
     const current = this.runtimes.get(thread.id);
     if (current !== undefined) return current.runtime;
-    const context = await this.executionContexts.resolve(thread);
-    const runtime = await this.runtime.open(
-      context.executionRoot,
-      thread.runtime_session_id,
-    );
-    const unsubscribe = runtime.subscribe((event) => {
-      this.onRuntimeEvent(thread, event);
-    });
-    this.runtimes.set(thread.id, { runtime, unsubscribe });
-    return runtime;
+    const existing = this.pendingRuntimeOpens.get(thread.id);
+    if (existing !== undefined) return await existing.promise;
+    const entry: PendingRuntimeOpen = {
+      cancelled: false,
+      promise: Promise.resolve(undefined as unknown as OpenRuntimeSession),
+    };
+    const promise = (async () => {
+      const context = await this.executionContexts.resolve(thread);
+      const opened = await this.runtime.open(
+        context.executionRoot,
+        thread.runtime_session_id,
+      );
+      if (
+        entry.cancelled ||
+        this.pendingRuntimeOpens.get(thread.id) !== entry
+      ) {
+        await opened.dispose();
+        throw new Error("runtime_open_cancelled");
+      }
+      const unsubscribe = opened.subscribe((event) => {
+        this.onRuntimeEvent(thread, event);
+      });
+      this.runtimes.set(thread.id, { runtime: opened, unsubscribe });
+      return opened;
+    })();
+    entry.promise = promise;
+    this.pendingRuntimeOpens.set(thread.id, entry);
+    try {
+      return await promise;
+    } finally {
+      if (this.pendingRuntimeOpens.get(thread.id) === entry)
+        this.pendingRuntimeOpens.delete(thread.id);
+    }
   }
 
   private onRuntimeEvent(thread: ThreadRecord, event: RuntimeEvent): void {
@@ -1012,24 +1053,31 @@ export class WorkspaceService {
     const thread = this.requireThread(projectId, threadId);
     const project = this.requireProject(projectId);
     this.store.setLastOpenedThread(projectId, threadId);
-    let transcript: TranscriptItem[] = [];
+    let transcriptPage: TranscriptPage | null = null;
     const diagnostics: string[] = [];
     try {
       const runtime = await this.openRuntime(thread);
-      const native = await runtime.snapshot();
-      transcript = native.transcript;
+      const native = await runtime.snapshot(transcriptPageLimits);
+      transcriptPage = native.transcriptPage;
       diagnostics.push(...native.diagnostics);
     } catch {
       diagnostics.push("The native agent session is unavailable or malformed.");
     }
+    transcriptPage ??= TranscriptPageSchema.parse({
+      items: [],
+      olderCursor: null,
+      newerCursor: null,
+      resumeCursor: "unavailable-transcript",
+      atLatest: true,
+    });
     const latest = this.store.latestRun(threadId);
     const current = latest?.state === "running" ? latest : null;
     const cursor = this.broker.cursor(threadId);
     return ThreadSnapshotSchema.parse({
-      version: 1,
+      version: 2,
       project: await this.projectDto(project),
       thread: this.threadDto(thread),
-      transcript,
+      transcriptPage,
       currentRun: current === null ? null : runDto(current),
       lastRun: latest === null ? null : runDto(latest),
       epoch: cursor.epoch,
@@ -1041,6 +1089,38 @@ export class WorkspaceService {
       },
       diagnostics,
     });
+  }
+
+  public threadLiveMetadata(
+    projectId: ProjectId,
+    threadId: ThreadId,
+  ): ThreadLiveMetadata {
+    this.requireThread(projectId, threadId);
+    const latest = this.store.latestRun(threadId);
+    const current = latest?.state === "running" ? latest : null;
+    const cursor = this.broker.cursor(threadId);
+    return ThreadLiveMetadataSchema.parse({
+      version: 1,
+      currentRun: current === null ? null : runDto(current),
+      lastRun: latest === null ? null : runDto(latest),
+      epoch: cursor.epoch,
+      highWaterSequence: cursor.sequence,
+      capabilities: {
+        prompt: current === null,
+        steer: current !== null,
+        stop: current !== null,
+      },
+    });
+  }
+
+  public async transcriptPage(
+    projectId: ProjectId,
+    threadId: ThreadId,
+    request: TranscriptPageRequest,
+  ): Promise<TranscriptPage> {
+    const thread = this.requireThread(projectId, threadId);
+    const runtime = await this.openRuntime(thread);
+    return await runtime.transcriptPage(request, transcriptPageLimits);
   }
 
   public async prompt(
@@ -1347,21 +1427,32 @@ export class WorkspaceService {
   }
 
   public async disposeThread(threadId: ThreadId): Promise<void> {
+    const pending = this.pendingRuntimeOpens.get(threadId);
+    if (pending !== undefined) {
+      pending.cancelled = true;
+      this.pendingRuntimeOpens.delete(threadId);
+    }
     const owner = this.runtimes.get(threadId);
-    if (owner === undefined) return;
-    this.runtimes.delete(threadId);
-    owner.unsubscribe();
-    await owner.runtime.dispose();
+    if (owner !== undefined) {
+      this.runtimes.delete(threadId);
+      owner.unsubscribe();
+      await owner.runtime.dispose();
+    }
+    if (pending !== undefined) await Promise.allSettled([pending.promise]);
   }
 
   public async close(): Promise<void> {
+    const pending = [...this.pendingRuntimeOpens.values()];
+    this.pendingRuntimeOpens.clear();
+    for (const entry of pending) entry.cancelled = true;
     const owners = [...this.runtimes.values()];
     this.runtimes.clear();
-    await Promise.allSettled(
-      owners.map(async (owner) => {
+    await Promise.allSettled([
+      ...pending.map((entry) => entry.promise),
+      ...owners.map(async (owner) => {
         owner.unsubscribe();
         await owner.runtime.dispose();
       }),
-    );
+    ]);
   }
 }

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -12,11 +13,14 @@ import {
   LiveEventSchema,
   LiveSnapshotRequiredSchema,
   ProjectIdSchema,
+  TranscriptItemSchema,
   ThreadIdSchema,
   type Project,
   type ProjectId,
   type ThreadId,
   type ThreadSnapshot,
+  type TranscriptItem,
+  type TranscriptPage,
 } from "@pi-web/contracts";
 import {
   Link,
@@ -37,6 +41,7 @@ import {
   getFiles,
   getSnapshot,
   getStatus,
+  getThreadLiveMetadata,
   getWorkspace,
   getWorkspacePreflight,
   importThread,
@@ -50,8 +55,11 @@ import {
   stop,
   webSocketUrl,
 } from "./api/client.js";
-import { Activity, displayTranscript } from "./components/Activity.js";
-import { Markdown } from "./components/Markdown.js";
+import {
+  ConversationTranscript,
+  TranscriptBookmarkProvider,
+  useTranscriptBookmarks,
+} from "./features/ConversationTranscript.js";
 import { Status } from "./components/Status.js";
 import { TerminalView } from "./features/TerminalView.js";
 import {
@@ -628,10 +636,14 @@ function Sidebar({
   );
 }
 
+type ThreadViewSnapshot = Omit<ThreadSnapshot, "transcriptPage">;
+
 function useLive(
   projectId: ProjectId,
   threadId: ThreadId,
-  snapshot: ThreadSnapshot | undefined,
+  snapshot: ThreadViewSnapshot | undefined,
+  following: boolean,
+  onLiveItem: (item: TranscriptItem) => void,
 ): void {
   const queryClient = useQueryClient();
   useEffect(() => {
@@ -639,6 +651,21 @@ function useLive(
     let closed = false;
     let retry: number | undefined;
     let socket: WebSocket | undefined;
+    let refreshTimer: number | undefined;
+    const refresh = () => {
+      refreshTimer = undefined;
+      void queryClient.invalidateQueries({
+        queryKey: [
+          following ? "snapshot" : "thread-metadata",
+          projectId,
+          threadId,
+        ],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+    };
+    const scheduleRefresh = () => {
+      refreshTimer ??= window.setTimeout(refresh, 50);
+    };
     const connect = () => {
       socket = new WebSocket(webSocketUrl("/api/live"));
       socket.addEventListener("open", () =>
@@ -659,15 +686,21 @@ function useLive(
         } catch {
           return;
         }
-        if (
-          LiveEventSchema.safeParse(value).success ||
-          LiveSnapshotRequiredSchema.safeParse(value).success
-        ) {
-          void queryClient.invalidateQueries({
-            queryKey: ["snapshot", projectId, threadId],
-          });
-          void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+        const live = LiveEventSchema.safeParse(value);
+        if (live.success) {
+          let streamingProjection = false;
+          if (live.data.eventType === "transcript") {
+            const item = TranscriptItemSchema.safeParse(live.data.payload);
+            if (item.success && item.data.id === "streaming-assistant") {
+              streamingProjection = true;
+              if (following) onLiveItem(item.data);
+            }
+          }
+          if (!streamingProjection) scheduleRefresh();
+          return;
         }
+        if (LiveSnapshotRequiredSchema.safeParse(value).success)
+          scheduleRefresh();
       });
       socket.addEventListener("close", () => {
         if (!closed) retry = window.setTimeout(connect, 1_000);
@@ -677,6 +710,7 @@ function useLive(
     return () => {
       closed = true;
       if (retry !== undefined) clearTimeout(retry);
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
       socket?.close();
     };
   }, [
@@ -685,53 +719,9 @@ function useLive(
     snapshot?.epoch,
     snapshot?.highWaterSequence,
     threadId,
+    following,
+    onLiveItem,
   ]);
-}
-
-function Transcript({ snapshot }: { snapshot: ThreadSnapshot }) {
-  return (
-    <div className="transcript" aria-label="Conversation">
-      {snapshot.transcript.length === 0 && (
-        <div className="empty conversation-empty">
-          <strong>No messages yet</strong>
-          <span>
-            Ask Pi to inspect, implement, or review something in this project.
-          </span>
-        </div>
-      )}
-      {displayTranscript(snapshot.transcript).map((item) =>
-        item.kind === "message" ? (
-          <article className={`message message-${item.role}`} key={item.id}>
-            <header>
-              {item.role === "assistant"
-                ? "Pi"
-                : item.role === "user"
-                  ? "You"
-                  : "System"}
-            </header>
-            <div className="markdown">
-              <Markdown>{item.text}</Markdown>
-            </div>
-          </article>
-        ) : item.kind === "tool" ? (
-          <Activity
-            item={item}
-            key={item.id}
-            projectPath={snapshot.project.displayPath}
-          />
-        ) : (
-          <p className={`diagnostic ${item.level}`} key={item.id}>
-            {item.text}
-          </p>
-        ),
-      )}
-      {snapshot.diagnostics.map((diagnostic) => (
-        <p className="diagnostic warning" key={diagnostic}>
-          {diagnostic}
-        </p>
-      ))}
-    </div>
-  );
 }
 
 export function Composer({
@@ -741,7 +731,7 @@ export function Composer({
 }: {
   projectId: ProjectId;
   threadId: ThreadId;
-  snapshot: ThreadSnapshot;
+  snapshot: Pick<ThreadSnapshot, "currentRun">;
 }) {
   const queryClient = useQueryClient();
   const [text, setText] = useState(() => readDraft(`pi-draft:${threadId}`));
@@ -1400,25 +1390,100 @@ function ThreadRoute() {
   if (!projectResult.success || !threadResult.success) return <NotFound />;
   const projectId = projectResult.data;
   const threadId = threadResult.data;
+  const queryClient = useQueryClient();
+  const bookmarks = useTranscriptBookmarks();
+  const [following, setFollowing] = useState(
+    () => bookmarks.get(threadId)?.mode !== "anchor",
+  );
+  const [liveItem, setLiveItem] = useState<TranscriptItem | null>(null);
+  const receiveLiveItem = useCallback((item: TranscriptItem) => {
+    setLiveItem(item);
+  }, []);
+  const updateFollowing = useCallback((value: boolean) => {
+    setFollowing(value);
+  }, []);
+  useEffect(() => {
+    setFollowing(bookmarks.get(threadId)?.mode !== "anchor");
+    setLiveItem(null);
+  }, [bookmarks, threadId]);
   const updateInspectorPreferences = (
     update: Partial<Omit<InspectorPreferences, "version">>,
   ) => {
     setInspectorPreferences((current) => ({ ...current, ...update }));
   };
-  const snapshot = useQuery({
+  const snapshot = useQuery<ThreadViewSnapshot>({
     queryKey: ["snapshot", projectId, threadId],
-    queryFn: () => getSnapshot(projectId, threadId),
-    refetchInterval: 15_000,
+    queryFn: async () => {
+      const full = await getSnapshot(projectId, threadId);
+      if (bookmarks.get(threadId)?.mode !== "anchor")
+        queryClient.setQueryData<{
+          pages: TranscriptPage[];
+          pageParams: { direction: "initial" }[];
+        }>(["transcript", projectId, threadId], {
+          pages: [full.transcriptPage],
+          pageParams: [{ direction: "initial" }],
+        });
+      return {
+        version: full.version,
+        project: full.project,
+        thread: full.thread,
+        currentRun: full.currentRun,
+        lastRun: full.lastRun,
+        epoch: full.epoch,
+        highWaterSequence: full.highWaterSequence,
+        capabilities: full.capabilities,
+        diagnostics: full.diagnostics,
+      };
+    },
+    refetchInterval: following ? 15_000 : false,
   });
-  useLive(projectId, threadId, snapshot.data);
+  const liveMetadata = useQuery({
+    queryKey: ["thread-metadata", projectId, threadId],
+    queryFn: () => getThreadLiveMetadata(projectId, threadId),
+    enabled: snapshot.data !== undefined && !following,
+    refetchInterval: following ? false : 15_000,
+  });
+  const effectiveSnapshot =
+    snapshot.data === undefined
+      ? undefined
+      : liveMetadata.data === undefined
+        ? snapshot.data
+        : {
+            ...snapshot.data,
+            currentRun: liveMetadata.data.currentRun,
+            lastRun: liveMetadata.data.lastRun,
+            epoch: liveMetadata.data.epoch,
+            highWaterSequence: liveMetadata.data.highWaterSequence,
+            capabilities: liveMetadata.data.capabilities,
+          };
+  useLive(projectId, threadId, snapshot.data, following, receiveLiveItem);
   useEffect(() => {
-    const lastRun = snapshot.data?.lastRun;
-    if (snapshot.data?.thread.unread === true && lastRun?.state === "completed")
+    if (effectiveSnapshot?.currentRun?.state !== "running") setLiveItem(null);
+  }, [effectiveSnapshot?.currentRun?.state]);
+  useEffect(
+    () => () => {
+      queryClient.removeQueries({
+        queryKey: ["snapshot", projectId, threadId],
+        exact: true,
+      });
+      queryClient.removeQueries({
+        queryKey: ["thread-metadata", projectId, threadId],
+        exact: true,
+      });
+    },
+    [projectId, queryClient, threadId],
+  );
+  useEffect(() => {
+    const lastRun = effectiveSnapshot?.lastRun;
+    if (
+      effectiveSnapshot?.thread.unread === true &&
+      lastRun?.state === "completed"
+    )
       void markViewed(projectId, threadId, lastRun.id);
   }, [
     projectId,
-    snapshot.data?.lastRun,
-    snapshot.data?.thread.unread,
+    effectiveSnapshot?.lastRun,
+    effectiveSnapshot?.thread.unread,
     threadId,
   ]);
   const threadWorkspace = snapshot.data?.thread.workspace ?? {
@@ -1484,8 +1549,8 @@ function ThreadRoute() {
               </div>
               <Status
                 state={
-                  snapshot.data.currentRun?.state ??
-                  snapshot.data.lastRun?.state ??
+                  effectiveSnapshot?.currentRun?.state ??
+                  effectiveSnapshot?.lastRun?.state ??
                   null
                 }
                 unread={snapshot.data.thread.unread}
@@ -1495,11 +1560,19 @@ function ThreadRoute() {
               <strong>Direct execution:</strong> Pi tools run with your user
               permissions, without application approval or an OS sandbox.
             </div>
-            <Transcript snapshot={snapshot.data} />
+            <ConversationTranscript
+              key={threadId}
+              projectId={projectId}
+              threadId={threadId}
+              projectPath={snapshot.data.project.displayPath}
+              diagnostics={snapshot.data.diagnostics}
+              liveItem={liveItem}
+              onFollowingChange={updateFollowing}
+            />
             <Composer
               projectId={projectId}
               threadId={threadId}
-              snapshot={snapshot.data}
+              snapshot={effectiveSnapshot ?? snapshot.data}
             />
           </main>
         </>
@@ -1697,15 +1770,17 @@ function EmptyRoot() {
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/" element={<EmptyRoot />} />
-      <Route path="/projects/:projectId" element={<ProjectRoute />} />
-      <Route path="/projects/:projectId/new" element={<NewChatRoute />} />
-      <Route
-        path="/projects/:projectId/threads/:threadId"
-        element={<ThreadRoute />}
-      />
-      <Route path="*" element={<NotFound />} />
-    </Routes>
+    <TranscriptBookmarkProvider>
+      <Routes>
+        <Route path="/" element={<EmptyRoot />} />
+        <Route path="/projects/:projectId" element={<ProjectRoute />} />
+        <Route path="/projects/:projectId/new" element={<NewChatRoute />} />
+        <Route
+          path="/projects/:projectId/threads/:threadId"
+          element={<ThreadRoute />}
+        />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </TranscriptBookmarkProvider>
   );
 }

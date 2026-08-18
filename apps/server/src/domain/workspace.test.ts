@@ -8,6 +8,7 @@ import type {
   PromptAcceptance,
   RuntimeEvent,
 } from "@pi-web/agent-runtime";
+import { TranscriptPageSchema } from "@pi-web/contracts";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -21,6 +22,13 @@ import {
 import { WorkspaceService } from "./workspace.js";
 
 const roots: string[] = [];
+const emptyTranscriptPage = TranscriptPageSchema.parse({
+  items: [],
+  olderCursor: null,
+  newerCursor: null,
+  resumeCursor: "empty-transcript-page",
+  atLatest: true,
+});
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -46,9 +54,12 @@ class ControlledSession implements OpenRuntimeSession {
   public snapshot() {
     return Promise.resolve({
       sessionId: this.id,
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       diagnostics: [],
     });
+  }
+  public transcriptPage() {
+    return Promise.resolve(emptyTranscriptPage);
   }
   public async prompt(): Promise<PromptAcceptance> {
     this.promptCount += 1;

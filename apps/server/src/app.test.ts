@@ -18,6 +18,7 @@ import {
   GitStatusResponseSchema,
   ProjectsResponseSchema,
   StartThreadResponseSchema,
+  TranscriptPageSchema,
 } from "@pi-web/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -27,6 +28,13 @@ import { parseConfig } from "./config.js";
 import { GitWorktreeManager } from "./worktrees/manager.js";
 
 const exec = promisify(execFile);
+const emptyTranscriptPage = TranscriptPageSchema.parse({
+  items: [],
+  olderCursor: null,
+  newerCursor: null,
+  resumeCursor: "empty-transcript-page",
+  atLatest: true,
+});
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -51,16 +59,16 @@ class FakeRuntime implements AgentRuntime {
 class PromptingSession implements OpenRuntimeSession {
   public readonly id = "10000000-0000-4000-8000-000000000001";
 
-  public snapshot(): Promise<{
-    sessionId: string;
-    transcript: [];
-    diagnostics: [];
-  }> {
+  public snapshot() {
     return Promise.resolve({
       sessionId: this.id,
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       diagnostics: [],
     });
+  }
+
+  public transcriptPage() {
+    return Promise.resolve(emptyTranscriptPage);
   }
 
   public prompt(): Promise<PromptAcceptance> {
@@ -558,6 +566,66 @@ describe("credential-free project API", () => {
       headers: { host },
     });
     expect(snapshot.statusCode).toBe(404);
+    await server.close();
+  });
+
+  it("serves strict bounded transcript page requests", async () => {
+    const paths = await directories();
+    const config = parseConfig({
+      argv: [],
+      environment: { PI_WEB_STATE_DIR: paths.state },
+    });
+    const server = await buildServer({
+      config,
+      runtime: new PromptingRuntime(),
+      logger: false,
+    });
+    const project =
+      await server.workspaceContext.workspace.registerSelectedProject(
+        paths.project,
+      );
+    const thread = await server.workspaceContext.workspace.createThread(
+      project.id,
+    );
+    const snapshot = await server.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/threads/${thread.id}`,
+      headers: { host },
+    });
+    expect(snapshot.statusCode).toBe(200);
+    expect(snapshot.json()).toMatchObject({
+      version: 2,
+      transcriptPage: { items: [], atLatest: true },
+    });
+
+    const metadata = await server.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/threads/${thread.id}/metadata`,
+      headers: { host },
+    });
+    expect(metadata.statusCode).toBe(200);
+    expect(metadata.json()).toMatchObject({
+      version: 1,
+      currentRun: null,
+      lastRun: null,
+    });
+    expect(metadata.json()).not.toHaveProperty("transcriptPage");
+
+    const cursor = emptyTranscriptPage.resumeCursor;
+    const page = await server.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/threads/${thread.id}/transcript?cursor=${cursor}&direction=resume`,
+      headers: { host },
+    });
+    expect(page.statusCode).toBe(200);
+    expect(page.json()).toEqual(emptyTranscriptPage);
+
+    const malformed = await server.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/threads/${thread.id}/transcript?cursor=${cursor}&direction=resume&limit=1`,
+      headers: { host },
+    });
+    expect(malformed.statusCode).toBe(400);
     await server.close();
   });
 

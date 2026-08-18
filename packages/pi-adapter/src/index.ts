@@ -1,4 +1,10 @@
-import { randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
@@ -28,13 +34,20 @@ import type {
   RuntimeSessionDescriptor,
   RuntimeSnapshot,
   TitleSuggestion,
+  TranscriptPageLimits,
 } from "@pi-web/agent-runtime";
 import { RuntimeFailure } from "@pi-web/agent-runtime";
 import {
   TimestampSchema,
   SessionIdSchema,
+  TranscriptCursorSchema,
   TranscriptItemSchema,
+  TranscriptPageRequestSchema,
+  TranscriptPageSchema,
+  type TranscriptCursor,
   type TranscriptItem,
+  type TranscriptPage,
+  type TranscriptPageRequest,
 } from "@pi-web/contracts";
 import { z } from "zod";
 
@@ -562,12 +575,27 @@ function translateMessage(
   });
 }
 
-function transcriptFromManager(manager: SessionManager): RuntimeSnapshot {
-  const transcript: TranscriptItem[] = [];
-  const diagnostics: string[] = [];
-  const toolInputs = new Map<string, string>();
-  const toolIndexes = new Map<string, number | null>();
-  for (const raw of parseNativeHistory(manager.getBranch())) {
+interface TranslatedTranscript {
+  sessionId: string;
+  transcript: TranscriptItem[];
+  diagnostics: string[];
+}
+
+interface IndexedTranscript extends TranslatedTranscript {
+  toolInputs: Map<string, string>;
+  toolIndexes: Map<string, number | null>;
+}
+
+function translateTranscriptEntries(
+  manager: SessionManager,
+  entries: readonly unknown[],
+  prior?: IndexedTranscript,
+): IndexedTranscript {
+  const transcript: TranscriptItem[] = [...(prior?.transcript ?? [])];
+  const diagnostics: string[] = [...(prior?.diagnostics ?? [])];
+  const toolInputs = new Map(prior?.toolInputs);
+  const toolIndexes = new Map(prior?.toolIndexes);
+  for (const raw of entries) {
     const parsed = baseEntrySchema.safeParse(raw);
     if (!parsed.success) {
       diagnostics.push("A malformed native session entry was omitted.");
@@ -678,7 +706,263 @@ function transcriptFromManager(manager: SessionManager): RuntimeSnapshot {
       else diagnostics.push("A malformed native session entry was omitted.");
     }
   }
-  return { sessionId: sessionIdFromManager(manager), transcript, diagnostics };
+  return {
+    sessionId: sessionIdFromManager(manager),
+    transcript,
+    diagnostics,
+    toolInputs,
+    toolIndexes,
+  };
+}
+
+function transcriptFromManager(manager: SessionManager): IndexedTranscript {
+  return translateTranscriptEntries(
+    manager,
+    parseNativeHistory(manager.getBranch()),
+  );
+}
+
+const cursorPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    purpose: z.enum(["older", "newer", "resume"]),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+    digest: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+const cursorEnvelopeSchema = z
+  .object({ payload: cursorPayloadSchema, signature: z.string().min(1) })
+  .strict();
+type CursorPurpose = z.infer<typeof cursorPayloadSchema>["purpose"];
+
+function checkedLimits(limits: TranscriptPageLimits): TranscriptPageLimits {
+  if (
+    !Number.isInteger(limits.maxItems) ||
+    limits.maxItems < 1 ||
+    limits.maxItems > 100 ||
+    !Number.isInteger(limits.targetBytes) ||
+    limits.targetBytes < 1
+  )
+    throw new RuntimeFailure(
+      "malformed",
+      "Transcript page limits are invalid.",
+    );
+  return limits;
+}
+
+function itemBytes(item: TranscriptItem): number {
+  return Buffer.byteLength(JSON.stringify(item));
+}
+
+class TranscriptPager {
+  private readonly key = randomBytes(32);
+  private sourceEntries: unknown[] = [];
+  private translated: IndexedTranscript | null = null;
+  private prefixDigests: string[] = [];
+  private liveProjection: TranscriptItem | null = null;
+
+  public constructor(private readonly manager: SessionManager) {}
+
+  private projection(): TranslatedTranscript {
+    const entries = parseNativeHistory(this.manager.getBranch());
+    const prefixUnchanged =
+      this.translated !== null &&
+      entries.length >= this.sourceEntries.length &&
+      this.sourceEntries.every((entry, index) => entry === entries[index]);
+    const unchanged =
+      prefixUnchanged && entries.length === this.sourceEntries.length;
+    if (!unchanged) {
+      this.translated = prefixUnchanged
+        ? translateTranscriptEntries(
+            this.manager,
+            entries.slice(this.sourceEntries.length),
+            this.translated ?? undefined,
+          )
+        : translateTranscriptEntries(this.manager, entries);
+      this.sourceEntries = [...entries];
+      this.prefixDigests = [createHash("sha256").update("").digest("hex")];
+      for (const item of this.translated.transcript) {
+        const previous =
+          this.prefixDigests[this.prefixDigests.length - 1] ?? "";
+        this.prefixDigests.push(
+          createHash("sha256")
+            .update(previous)
+            .update(JSON.stringify(item))
+            .digest("hex"),
+        );
+      }
+    }
+    if (this.translated === null)
+      throw new RuntimeFailure("unavailable", "Transcript is unavailable.");
+    this.prefixDigests = this.prefixDigests.slice(
+      0,
+      this.translated.transcript.length + 1,
+    );
+    if (this.liveProjection === null) return this.translated;
+    const transcript = [...this.translated.transcript, this.liveProjection];
+    const previous = this.prefixDigests.at(-1) ?? "";
+    this.prefixDigests.push(
+      createHash("sha256")
+        .update(previous)
+        .update(JSON.stringify(this.liveProjection))
+        .digest("hex"),
+    );
+    return { ...this.translated, transcript };
+  }
+
+  public setLiveProjection(item: TranscriptItem): void {
+    this.liveProjection = TranscriptItemSchema.parse(item);
+  }
+
+  public clearLiveProjection(): void {
+    this.liveProjection = null;
+  }
+
+  private cursor(
+    purpose: CursorPurpose,
+    start: number,
+    end: number,
+  ): TranscriptCursor {
+    const digest = this.prefixDigests[end];
+    if (digest === undefined)
+      throw new RuntimeFailure("malformed", "Transcript boundary is invalid.");
+    const payload = cursorPayloadSchema.parse({
+      version: 1,
+      purpose,
+      start,
+      end,
+      digest,
+    });
+    const serialized = JSON.stringify(payload);
+    const signature = createHmac("sha256", this.key)
+      .update(serialized)
+      .digest("base64url");
+    return TranscriptCursorSchema.parse(
+      Buffer.from(JSON.stringify({ payload, signature })).toString("base64url"),
+    );
+  }
+
+  private parseCursor(
+    raw: TranscriptCursor,
+    purpose: CursorPurpose,
+  ): z.infer<typeof cursorPayloadSchema> {
+    let unknownEnvelope: unknown;
+    try {
+      unknownEnvelope = JSON.parse(Buffer.from(raw, "base64url").toString());
+    } catch {
+      throw new RuntimeFailure("stale", "Transcript position is stale.");
+    }
+    const envelope = cursorEnvelopeSchema.safeParse(unknownEnvelope);
+    if (!envelope.success || envelope.data.payload.purpose !== purpose)
+      throw new RuntimeFailure("stale", "Transcript position is stale.");
+    const expected = createHmac("sha256", this.key)
+      .update(JSON.stringify(envelope.data.payload))
+      .digest();
+    let actual: Buffer;
+    try {
+      actual = Buffer.from(envelope.data.signature, "base64url");
+    } catch {
+      throw new RuntimeFailure("stale", "Transcript position is stale.");
+    }
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
+      throw new RuntimeFailure("stale", "Transcript position is stale.");
+    return envelope.data.payload;
+  }
+
+  private packBackward(
+    items: readonly TranscriptItem[],
+    end: number,
+    limits: TranscriptPageLimits,
+  ): { start: number; end: number } {
+    let start = end;
+    let bytes = 0;
+    while (start > 0 && end - start < limits.maxItems) {
+      const nextItem = items[start - 1];
+      if (nextItem === undefined) break;
+      const nextBytes = itemBytes(nextItem);
+      if (start < end && bytes + nextBytes > limits.targetBytes) break;
+      start -= 1;
+      bytes += nextBytes;
+    }
+    return { start, end };
+  }
+
+  private packForward(
+    items: readonly TranscriptItem[],
+    start: number,
+    limits: TranscriptPageLimits,
+  ): { start: number; end: number } {
+    let end = start;
+    let bytes = 0;
+    while (end < items.length && end - start < limits.maxItems) {
+      const nextItem = items[end];
+      if (nextItem === undefined) break;
+      const nextBytes = itemBytes(nextItem);
+      if (end > start && bytes + nextBytes > limits.targetBytes) break;
+      end += 1;
+      bytes += nextBytes;
+    }
+    return { start, end };
+  }
+
+  private page(
+    projection: TranslatedTranscript,
+    start: number,
+    end: number,
+  ): TranscriptPage {
+    const count = projection.transcript.length;
+    const hasTransientTail =
+      end > start &&
+      projection.transcript[end - 1]?.id === "streaming-assistant";
+    const resumeEnd = hasTransientTail ? end - 1 : end;
+    const resumeStart = Math.min(start, resumeEnd);
+    return TranscriptPageSchema.parse({
+      items: projection.transcript.slice(start, end),
+      olderCursor: start === 0 ? null : this.cursor("older", start, start),
+      newerCursor: end === count ? null : this.cursor("newer", end, end),
+      resumeCursor: this.cursor("resume", resumeStart, resumeEnd),
+      atLatest: end === count,
+    });
+  }
+
+  public latest(rawLimits: TranscriptPageLimits): RuntimeSnapshot {
+    const limits = checkedLimits(rawLimits);
+    const projection = this.projection();
+    const bounds = this.packBackward(
+      projection.transcript,
+      projection.transcript.length,
+      limits,
+    );
+    return {
+      sessionId: projection.sessionId,
+      transcriptPage: this.page(projection, bounds.start, bounds.end),
+      diagnostics: projection.diagnostics.slice(-100),
+    };
+  }
+
+  public requested(
+    rawRequest: TranscriptPageRequest,
+    rawLimits: TranscriptPageLimits,
+  ): TranscriptPage {
+    const request = TranscriptPageRequestSchema.parse(rawRequest);
+    const limits = checkedLimits(rawLimits);
+    const projection = this.projection();
+    const cursor = this.parseCursor(request.cursor, request.direction);
+    if (
+      cursor.start > cursor.end ||
+      cursor.end > projection.transcript.length ||
+      this.prefixDigests[cursor.end] !== cursor.digest
+    )
+      throw new RuntimeFailure("stale", "Transcript position is stale.");
+    if (request.direction === "resume")
+      return this.page(projection, cursor.start, cursor.end);
+    const bounds =
+      request.direction === "older"
+        ? this.packBackward(projection.transcript, cursor.start, limits)
+        : this.packForward(projection.transcript, cursor.end, limits);
+    return this.page(projection, bounds.start, bounds.end);
+  }
 }
 
 const eventSchema = z.looseObject({ type: z.string() });
@@ -749,6 +1033,7 @@ function mapEvent(event: unknown): RuntimeEvent {
 
 class PiOpenSession implements OpenRuntimeSession {
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
+  private readonly pager: TranscriptPager;
   private readonly unsubscribe: () => void;
   private bufferedEvents: RuntimeEvent[] | null = null;
   private disposed = false;
@@ -757,8 +1042,13 @@ class PiOpenSession implements OpenRuntimeSession {
     private readonly session: AgentSession,
     private readonly manager: SessionManager,
   ) {
+    this.pager = new TranscriptPager(manager);
     this.unsubscribe = session.subscribe((event) => {
       const mapped = mapEvent(event);
+      if (mapped.type === "transcript-update")
+        this.pager.setLiveProjection(mapped.item);
+      else if (mapped.type === "transcript" || mapped.type === "settled")
+        this.pager.clearLiveProjection();
       if (this.bufferedEvents !== null) this.bufferedEvents.push(mapped);
       else for (const listener of this.listeners) listener(mapped);
     });
@@ -768,8 +1058,15 @@ class PiOpenSession implements OpenRuntimeSession {
     return sessionIdFromManager(this.manager);
   }
 
-  public snapshot(): Promise<RuntimeSnapshot> {
-    return Promise.resolve().then(() => transcriptFromManager(this.manager));
+  public snapshot(limits: TranscriptPageLimits): Promise<RuntimeSnapshot> {
+    return Promise.resolve().then(() => this.pager.latest(limits));
+  }
+
+  public transcriptPage(
+    request: TranscriptPageRequest,
+    limits: TranscriptPageLimits,
+  ): Promise<TranscriptPage> {
+    return Promise.resolve().then(() => this.pager.requested(request, limits));
   }
 
   public async prompt(
@@ -834,19 +1131,21 @@ class PiOpenSession implements OpenRuntimeSession {
     return { accepted, settlement, releaseEvents, discardEvents };
   }
 
-  public async recoverPrompt(
+  public recoverPrompt(
     text: string,
     dispatch: RuntimePromptDispatch,
   ): Promise<PromptRecovery> {
     z.uuid().parse(dispatch.id);
-    const snapshot = await this.snapshot();
-    return this.hasPromptDispatch(dispatch, text) &&
+    const snapshot = transcriptFromManager(this.manager);
+    const outcome: PromptRecovery =
+      this.hasPromptDispatch(dispatch, text) &&
       snapshot.transcript.some(
         (item) =>
           item.kind === "message" && item.role === "user" && item.text === text,
       )
-      ? { outcome: "accepted" }
-      : { outcome: "not_accepted" };
+        ? { outcome: "accepted" }
+        : { outcome: "not_accepted" };
+    return Promise.resolve(outcome);
   }
 
   private hasPromptDispatch(
@@ -877,6 +1176,7 @@ class PiOpenSession implements OpenRuntimeSession {
     if (!this.disposed) {
       this.disposed = true;
       this.unsubscribe();
+      this.pager.clearLiveProjection();
       this.listeners.clear();
       this.session.dispose();
     }

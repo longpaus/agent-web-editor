@@ -143,11 +143,47 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
 ]);
 export type TranscriptItem = z.infer<typeof TranscriptItemSchema>;
 
+export const TranscriptCursorSchema = z
+  .string()
+  .min(16)
+  .max(2_048)
+  .regex(/^[A-Za-z0-9_-]+$/)
+  .brand<"TranscriptCursor">();
+export type TranscriptCursor = z.infer<typeof TranscriptCursorSchema>;
+
+export const TranscriptPageDirectionSchema = z.enum([
+  "older",
+  "newer",
+  "resume",
+]);
+export type TranscriptPageDirection = z.infer<
+  typeof TranscriptPageDirectionSchema
+>;
+
+export const TranscriptPageRequestSchema = z
+  .object({
+    cursor: TranscriptCursorSchema,
+    direction: TranscriptPageDirectionSchema,
+  })
+  .strict();
+export type TranscriptPageRequest = z.infer<typeof TranscriptPageRequestSchema>;
+
+export const TranscriptPageSchema = z
+  .object({
+    items: z.array(TranscriptItemSchema).max(100),
+    olderCursor: TranscriptCursorSchema.nullable(),
+    newerCursor: TranscriptCursorSchema.nullable(),
+    resumeCursor: TranscriptCursorSchema,
+    atLatest: z.boolean(),
+  })
+  .strict();
+export type TranscriptPage = z.infer<typeof TranscriptPageSchema>;
+
 export const ThreadSnapshotSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   project: ProjectSchema,
   thread: ThreadSummarySchema,
-  transcript: z.array(TranscriptItemSchema).max(100_000),
+  transcriptPage: TranscriptPageSchema,
   currentRun: RunSchema.nullable(),
   lastRun: RunSchema.nullable(),
   epoch: uuid,
@@ -160,6 +196,22 @@ export const ThreadSnapshotSchema = z.object({
   diagnostics: z.array(z.string().max(500)).max(100),
 });
 export type ThreadSnapshot = z.infer<typeof ThreadSnapshotSchema>;
+
+export const ThreadLiveMetadataSchema = z
+  .object({
+    version: z.literal(1),
+    currentRun: RunSchema.nullable(),
+    lastRun: RunSchema.nullable(),
+    epoch: uuid,
+    highWaterSequence: z.number().int().nonnegative(),
+    capabilities: z.object({
+      prompt: z.boolean(),
+      steer: z.boolean(),
+      stop: z.boolean(),
+    }),
+  })
+  .strict();
+export type ThreadLiveMetadata = z.infer<typeof ThreadLiveMetadataSchema>;
 
 export const ProjectsResponseSchema = z.object({
   projects: z.array(ProjectSchema),

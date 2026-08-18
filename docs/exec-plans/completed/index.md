@@ -36,3 +36,7 @@ specifications, designs, code, or tests.
   added a manually invoked project-local Pi skill and checked-in start/close
   commands for random-port, disposable-SQLite UI review environments that
   install missing dependencies and hard-refuse the main worktree.
+- [Scalable conversation history](2026-08-16-scalable-conversation-history.md) —
+  added bounded latest/history/resume pages, authenticated append-stable
+  cursors, one five-page active browser window, per-thread in-tab reading
+  restoration, polite live following, and 10,000-item structural coverage.

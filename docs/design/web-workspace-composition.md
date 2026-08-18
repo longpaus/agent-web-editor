@@ -25,7 +25,7 @@ Canonical routes are:
 
 Route params are parsed before requests. The route is the only selected-thread authority, so separate tabs remain independent. Server metadata stores project expansion and last-opened thread. TanStack Query owns fetch lifecycle for projects, thread snapshots, files, and Git data; mutations use explicit idempotency keys and invalidate/update only related keys.
 
-A per-thread live reducer applies parsed snapshots and epoch/sequence events. It never becomes durable truth and replaces itself on snapshot reset. React keys use stable message/tool/event IDs, not array positions.
+A per-thread live reducer applies parsed snapshots and epoch/sequence events. It never becomes durable truth and replaces itself on snapshot reset. Transcript pages have one active owner: a bidirectional TanStack window of at most five 100-item pages. Switching threads releases those pages after recording only a transient follow-latest or stable-item/offset/resume-cursor bookmark. React keys use stable message/tool/event IDs, not array positions.
 
 Versioned localStorage is limited to safe device UI preferences and drafts:
 
@@ -42,8 +42,9 @@ Malformed or unknown-version local values are discarded explicitly. Project/thre
 - `features/projects`: project tree, server-owned native Browse registration,
   remove/expand/unavailable states. The browser never receives or constructs the
   selected absolute project path.
-- `features/threads`: route loader, thread list/rename, transcript and activity
-  rendering, plus the Codex-style project/location/start-state/branch new-chat
+- `features/threads`: route loader, thread list/rename, bounded transcript page
+  ownership, per-thread viewport bookmarks, live following, activity rendering,
+  plus the Codex-style project/location/start-state/branch new-chat
   toolbar. Clean worktree is the default; include-local and direct-checkout use
   are explicit and the environment slot is omitted.
 - `features/runs`: composer, direct active-run steering, stop, status, trust disclosure, and streaming reducer.
@@ -66,7 +67,11 @@ Desktop uses CSS grid with project/thread sidebar, selected-thread center, and i
 
 Below the approved narrow breakpoint, the center remains primary and sidebar/inspector become modal drawers with focus trapping, Escape close, focus restoration, backdrop semantics, and no hidden focusable content. Composer remains near the viewport bottom without covering transcript content.
 
-The visual baseline is dark, compact, restrained, and honors `prefers-reduced-motion`. Color tokens are CSS custom properties and status is never conveyed by color alone.
+The conversation viewport first opens at latest, follows appended and in-place
+stream growth only while near that edge, preserves a stable reading anchor after
+scroll-away or older-page prepend, and offers a keyboard-accessible Jump to
+latest action. The visual baseline is dark, compact, restrained, and honors
+`prefers-reduced-motion`. Color tokens are CSS custom properties and status is never conveyed by color alone.
 
 ## Accessibility behavior
 

@@ -12,12 +12,21 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  ProjectId,
-  RunId,
-  ThreadId,
-  ThreadSnapshot,
+import {
+  TranscriptPageSchema,
+  type ProjectId,
+  type RunId,
+  type ThreadId,
+  type ThreadSnapshot,
 } from "@pi-web/contracts";
+
+const emptyTranscriptPage = TranscriptPageSchema.parse({
+  items: [],
+  olderCursor: null,
+  newerCursor: null,
+  resumeCursor: "empty-transcript-page",
+  atLatest: true,
+});
 
 const api = vi.hoisted(() => ({
   archiveThread: vi.fn(),
@@ -83,7 +92,7 @@ describe("safe and accessible workspace rendering", () => {
     const projectId = "10000000-0000-4000-8000-000000000001" as ProjectId;
     const threadId = "20000000-0000-4000-8000-000000000001" as ThreadId;
     const snapshot: ThreadSnapshot = {
-      version: 1,
+      version: 2,
       project: {
         id: projectId,
         displayName: "Example project",
@@ -106,7 +115,7 @@ describe("safe and accessible workspace rendering", () => {
         runtimeAvailable: true,
         workspace: { mode: "shared", branchName: null, available: true },
       },
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       currentRun: null,
       lastRun: null,
       epoch: "40000000-0000-4000-8000-000000000001",
@@ -155,7 +164,7 @@ describe("safe and accessible workspace rendering", () => {
     const projectId = "10000000-0000-4000-8000-000000000001" as ProjectId;
     const threadId = "20000000-0000-4000-8000-000000000001" as ThreadId;
     const snapshot = {
-      version: 1,
+      version: 2,
       project: {
         id: projectId,
         displayName: "Example project",
@@ -178,7 +187,7 @@ describe("safe and accessible workspace rendering", () => {
         runtimeAvailable: true,
         workspace: { mode: "shared", branchName: null, available: true },
       },
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       currentRun: null,
       lastRun: null,
       epoch: "40000000-0000-4000-8000-000000000001",
@@ -289,7 +298,7 @@ describe("safe and accessible workspace rendering", () => {
     const projectId = "10000000-0000-4000-8000-000000000001" as ProjectId;
     const threadId = "20000000-0000-4000-8000-000000000001" as ThreadId;
     const snapshot: ThreadSnapshot = {
-      version: 1,
+      version: 2,
       project: {
         id: projectId,
         displayName: "Example project",
@@ -312,7 +321,7 @@ describe("safe and accessible workspace rendering", () => {
         runtimeAvailable: true,
         workspace: { mode: "shared", branchName: null, available: true },
       },
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       currentRun: null,
       lastRun: null,
       epoch: "40000000-0000-4000-8000-000000000001",
@@ -469,7 +478,7 @@ describe("safe and accessible workspace rendering", () => {
       diagnostics: [],
     });
     api.getSnapshot.mockResolvedValue({
-      version: 1,
+      version: 2,
       project,
       thread: {
         id: threadId,
@@ -482,7 +491,7 @@ describe("safe and accessible workspace rendering", () => {
         runtimeAvailable: true,
         workspace: { mode: "shared", branchName: null, available: true },
       },
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       currentRun: null,
       lastRun: null,
       epoch: "40000000-0000-4000-8000-000000000001",
@@ -640,7 +649,7 @@ describe("safe and accessible workspace rendering", () => {
       },
     });
     api.getSnapshot.mockResolvedValue({
-      version: 1,
+      version: 2,
       project: workspace.projects[0],
       thread: {
         id: importedThreadId,
@@ -650,7 +659,7 @@ describe("safe and accessible workspace rendering", () => {
         runState: null,
         unread: false,
       },
-      transcript: [],
+      transcriptPage: emptyTranscriptPage,
       currentRun: null,
       lastRun: null,
       epoch: "60000000-0000-4000-8000-000000000001",

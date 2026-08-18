@@ -96,9 +96,13 @@ running and preflight work before soft-removing its metadata.
 An idempotent archive command rejects in-process prompt preflight and persisted
 running work, atomically updates the project's active-thread fallback, then
 releases any inactive open runtime. Archived IDs are rejected by normal
-snapshot, prompt, steering, rename, and viewed routes. HTTP snapshots
-reconstructed from native history plus run metadata are authoritative.
-`LiveBroker` adds process-epoch, monotonic sequence events and a
+snapshot, prompt, steering, rename, and viewed routes. HTTP snapshots reconstructed from native history plus run metadata are
+authoritative and contain only a count/byte-bounded latest transcript page.
+Owned read-only history endpoints serve authenticated opaque older, newer, and
+resume cursors; a page-free metadata endpoint updates readers that are away from
+latest. Runtime opening is single-flight per thread so concurrent snapshot and
+history requests share cursor ownership. `LiveBroker` adds process-epoch,
+monotonic sequence events and a
 bounded replay ring for Origin-permitted WebSocket subscribers. Browser queries
 invalidate and replace snapshots after events or replay gaps; browser stream
 state is never durable truth.
@@ -137,17 +141,21 @@ control backed by a request-policy-protected browse-and-register mutation;
 selected canonical paths never enter browser state or wire responses. New chat
 uses an inline project, execution-location, starting-state, and branch toolbar
 above the first prompt. Worktree and clean-start are the safe defaults;
-local-change transfer and direct checkout use are explicit. The workspace
-renders a nested project and thread sidebar, Markdown transcript and activity,
-direct active-run steering and stop controls, direct-execution disclosure,
+local-change transfer and direct checkout use are explicit. The workspace renders a nested project and thread sidebar, a chronological
+Markdown transcript with at most five active 100-item pages, direct active-run
+steering and stop controls, direct-execution disclosure,
 Files/Changes/Terminal inspector, and
 responsive drawers. The desktop inspector uses a reduced-motion-aware slide to
 close and reopen and can be resized with a pointer or keyboard; a versioned local
 preference restores its visibility, selected tab, and width. Thread rows expose a hover/focus Archive icon and an
 accessible right-click/keyboard Rename and Archive menu. Run and unread signals
 sit beside the thread title with icon-only visible presentation and accessible
-labels. Local storage is limited to unsent per-thread drafts and parsed,
-device-local inspector layout preferences.
+labels. Local storage is limited to unsent per-thread drafts and parsed, device-local
+inspector layout preferences. Conversation viewport state is transient: each
+visited thread keeps only a follow-latest or stable-item/offset/resume-cursor
+bookmark in the current tab. The active thread alone owns transcript pages;
+stream growth follows near the latest edge, scroll-away preserves the reading
+anchor, and Jump to latest replaces the active window authoritatively.
 
 Every HTTP response and WebSocket frame is parsed with contracts. Raw Markdown
 HTML and images are disabled; terminal escape handling is confined to xterm.

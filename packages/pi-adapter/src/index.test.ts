@@ -35,6 +35,7 @@ import { parseGeneratedTitle, PiAgentRuntime } from "./index.js";
 
 const roots: string[] = [];
 const sessionId = "10000000-0000-4000-8000-000000000001";
+const pageLimits = { maxItems: 100, targetBytes: 1_048_576 };
 
 afterEach(async () => {
   vi.clearAllMocks();
@@ -709,22 +710,114 @@ describe("PiAgentRuntime session open boundary", () => {
     });
 
     const opened = await new PiAgentRuntime().open(context.project, sessionId);
-    await expect(opened.snapshot()).resolves.toEqual({
+    await expect(opened.snapshot(pageLimits)).resolves.toMatchObject({
       sessionId,
-      transcript: [
-        {
-          id: "valid-message",
-          kind: "message",
-          role: "user",
-          text: "Retained",
-          timestamp: "2026-01-01T00:00:00.000Z",
-        },
-      ],
+      transcriptPage: {
+        items: [
+          {
+            id: "valid-message",
+            kind: "message",
+            role: "user",
+            text: "Retained",
+            timestamp: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+        olderCursor: null,
+        newerCursor: null,
+        atLatest: true,
+      },
       diagnostics: [
         "A malformed native session entry was omitted.",
         "A malformed native session entry was omitted.",
       ],
     });
+  });
+
+  it("bounds and resumes pages in a deterministic 10,000-item history", async () => {
+    const context = await fixture();
+    sdk.list.mockResolvedValue([
+      descriptor(context.project, context.sessionPath),
+    ]);
+    const nativeEntries = Array.from({ length: 10_000 }, (_, index) => ({
+      id: `message-${String(index).padStart(5, "0")}`,
+      type: "message",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: { role: "user", content: `Message ${String(index)}` },
+    }));
+    sdk.open.mockReturnValue(openedManager(nativeEntries));
+    sdk.createAgentSession.mockResolvedValue({
+      session: { subscribe: () => () => undefined },
+    });
+
+    const opened = await new PiAgentRuntime().open(context.project, sessionId);
+    const latest = await opened.snapshot(pageLimits);
+    expect(latest.transcriptPage.items).toHaveLength(100);
+    expect(latest.transcriptPage.items[0]?.id).toBe("message-09900");
+    expect(latest.transcriptPage.atLatest).toBe(true);
+
+    const olderCursor = latest.transcriptPage.olderCursor;
+    expect(olderCursor).not.toBeNull();
+    if (olderCursor === null) throw new Error("missing older cursor");
+    const older = await opened.transcriptPage(
+      { cursor: olderCursor, direction: "older" },
+      pageLimits,
+    );
+    expect(older.items).toHaveLength(100);
+    expect(older.items[0]?.id).toBe("message-09800");
+    expect(older.items.at(-1)?.id).toBe("message-09899");
+
+    const resumed = await opened.transcriptPage(
+      { cursor: older.resumeCursor, direction: "resume" },
+      pageLimits,
+    );
+    expect(resumed.items.map((item) => item.id)).toEqual(
+      older.items.map((item) => item.id),
+    );
+
+    nativeEntries.push({
+      id: "message-10000",
+      type: "message",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: { role: "user", content: "Appended" },
+    });
+    await expect(
+      opened.transcriptPage(
+        { cursor: older.resumeCursor, direction: "resume" },
+        pageLimits,
+      ),
+    ).resolves.toMatchObject({
+      items: older.items,
+    });
+
+    const divergent = nativeEntries[9_850];
+    if (divergent === undefined) throw new Error("missing divergent entry");
+    nativeEntries[9_850] = {
+      ...divergent,
+      message: { role: "user", content: "Diverged" },
+    };
+    await expect(
+      opened.transcriptPage(
+        { cursor: older.resumeCursor, direction: "resume" },
+        pageLimits,
+      ),
+    ).rejects.toMatchObject({ code: "stale" });
+
+    const newerCursor = older.newerCursor;
+    expect(newerCursor).not.toBeNull();
+    if (newerCursor === null) throw new Error("missing newer cursor");
+    await expect(
+      opened.transcriptPage(
+        { cursor: newerCursor, direction: "newer" },
+        pageLimits,
+      ),
+    ).rejects.toMatchObject({ code: "stale" });
+
+    await expect(
+      opened.transcriptPage(
+        { cursor: older.resumeCursor, direction: "older" },
+        pageLimits,
+      ),
+    ).rejects.toMatchObject({ code: "stale" });
   });
 
   it("rejects malformed native history collections from snapshots", async () => {
@@ -738,7 +831,7 @@ describe("PiAgentRuntime session open boundary", () => {
     });
 
     const opened = await new PiAgentRuntime().open(context.project, sessionId);
-    await expect(opened.snapshot()).rejects.toMatchObject({
+    await expect(opened.snapshot(pageLimits)).rejects.toMatchObject({
       code: "malformed",
       message: "The native session history is malformed.",
     });
@@ -830,8 +923,8 @@ describe("PiAgentRuntime session open boundary", () => {
     });
 
     const opened = await new PiAgentRuntime().open(context.project, sessionId);
-    const snapshot = await opened.snapshot();
-    expect(snapshot.transcript).toMatchObject([
+    const snapshot = await opened.snapshot(pageLimits);
+    expect(snapshot.transcriptPage.items).toMatchObject([
       { id: "assistant", kind: "message", role: "assistant" },
       {
         id: "result-1",
@@ -866,6 +959,44 @@ describe("PiAgentRuntime session open boundary", () => {
     expect(snapshot.diagnostics).toEqual([
       "An unsupported native message was omitted.",
     ]);
+  });
+});
+
+describe("PiOpenSession streaming projection", () => {
+  it("replaces repeated message updates and includes the newest bounded projection", async () => {
+    const context = await fixture();
+    sdk.list.mockResolvedValue([
+      descriptor(context.project, context.sessionPath),
+    ]);
+    sdk.open.mockReturnValue(openedManager());
+    let listener: ((event: unknown) => void) | undefined;
+    sdk.createAgentSession.mockResolvedValue({
+      session: {
+        subscribe: (next: (event: unknown) => void) => {
+          listener = next;
+          return () => undefined;
+        },
+        dispose: () => undefined,
+      },
+    });
+    const opened = await new PiAgentRuntime().open(context.project, sessionId);
+
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: "First" },
+    });
+    listener?.({
+      type: "message_update",
+      message: { role: "assistant", content: "Newest" },
+    });
+    const streaming = await opened.snapshot(pageLimits);
+    expect(streaming.transcriptPage.items).toMatchObject([
+      { id: "streaming-assistant", text: "Newest" },
+    ]);
+
+    listener?.({ type: "agent_settled" });
+    const settled = await opened.snapshot(pageLimits);
+    expect(settled.transcriptPage.items).toEqual([]);
   });
 });
 

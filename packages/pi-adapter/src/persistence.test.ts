@@ -39,9 +39,16 @@ describe("PiAgentRuntime persistent session creation", () => {
     });
 
     const opened = await restartedRuntime.open(project, created.sessionId);
-    await expect(opened.snapshot()).resolves.toEqual({
+    await expect(
+      opened.snapshot({ maxItems: 100, targetBytes: 1_048_576 }),
+    ).resolves.toMatchObject({
       sessionId: created.sessionId,
-      transcript: [],
+      transcriptPage: {
+        items: [],
+        olderCursor: null,
+        newerCursor: null,
+        atLatest: true,
+      },
       diagnostics: [],
     });
     await opened.dispose();
