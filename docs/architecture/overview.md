@@ -104,12 +104,16 @@ an explicit naming-model override takes precedence, otherwise the call uses the
 project's configured default Pi model. Deterministic local naming is the
 non-blocking fallback. Prompt preflight acceptance precedes atomic run/receipt
 creation. Text-only prompt commands retain their strict JSON representation.
-Image-bearing start, continuation, prompt, and steer commands use route-bounded multipart
-bodies: the server detects JPEG/PNG/WebP bytes and dimensions, hashes ordered
-source content for idempotency, and passes SDK-neutral image input to the
-adapter. The adapter checks model/settings capability, bounds concurrent
-worker-backed resizing, and supplies Pi flat multimodal image blocks; native Pi
-JSONL remains their durable store. A thread-level in-process preflight lease and
+Image-bearing start, continuation, prompt, and steer commands use route-bounded
+multipart bodies: the server detects JPEG/PNG/WebP bytes and dimensions, hashes
+ordered source content for idempotency, and passes SDK-neutral image input to
+the selected adapter. Pi checks model/settings capability, bounds concurrent
+worker-backed resizing, and supplies flat multimodal image blocks; native Pi
+JSONL remains their durable store. Codex resolves model capability through
+app-server, revalidates source bytes, stores private content-addressed files
+beneath the configured Codex state root, and supplies ordered `localImage`
+items. Only exact thread-owned Codex paths project back to opaque transcript
+image references. A thread-level in-process preflight lease and
 SQLite partial unique index prevent simultaneous runs in one thread. Threads
 that explicitly share one managed worktree through `/new` also share an
 in-process preflight lease and persisted running-run constraint; distinct
@@ -207,8 +211,8 @@ active tab, and each tab's own restorable state.
 Every HTTP response and WebSocket frame is parsed with contracts. A composer
 accepts up to four bounded JPEG/PNG/WebP images by pane-scoped drop, explicit
 clipboard paste, or an accessible file picker; pending files remain page-memory
-only and image-bearing commands retain them on failure. Native user-image blocks
-project as opaque content-addressed refs and load on demand through an
-authorized project/thread route. This typed attachment renderer is separate
+only and image-bearing commands retain them on failure. Native or adapter-owned
+user images project as opaque content-addressed refs and load on demand through
+an authorized project/thread route. This typed attachment renderer is separate
 from Markdown: raw Markdown HTML and arbitrary Markdown images remain disabled;
 terminal escape handling is confined to xterm.

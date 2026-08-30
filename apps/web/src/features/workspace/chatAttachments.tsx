@@ -57,7 +57,6 @@ export function useChatAttachments(
   const addFiles = useCallback(
     (files: readonly File[], source: "drop" | "picker" | "paste") => {
       if (capability === "unsupported") {
-        setError("The selected Pi model or settings cannot receive images.");
         return;
       }
       setImages((current) => {
@@ -201,18 +200,11 @@ export function ChatAttachmentStrip({
   images,
   error,
   onRemove,
-  onAdd,
-  disabled,
-  unavailableExplanation,
 }: {
   images: readonly PendingChatImage[];
   error: string | null;
   onRemove: (id: string) => void;
-  onAdd: (files: readonly File[]) => void;
-  disabled: boolean;
-  unavailableExplanation?: string | undefined;
 }) {
-  const explanationId = "chat-attachment-unavailable";
   return (
     <>
       {images.length > 0 && (
@@ -251,30 +243,8 @@ export function ChatAttachmentStrip({
       )}
       {images.length > 0 && (
         <p className="chat-attachment-disclosure">
-          Photos are sent to the selected model and stored in native Pi session
-          history.
-        </p>
-      )}
-      <label className={`add-photos${disabled ? " disabled" : ""}`}>
-        <span>＋ Add photos</span>
-        <input
-          type="file"
-          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
-          multiple
-          disabled={disabled}
-          aria-describedby={
-            unavailableExplanation === undefined ? undefined : explanationId
-          }
-          onChange={(event) => {
-            const files = [...(event.currentTarget.files ?? [])];
-            event.currentTarget.value = "";
-            onAdd(files);
-          }}
-        />
-      </label>
-      {unavailableExplanation !== undefined && (
-        <p id={explanationId} className="chat-attachment-disclosure">
-          {unavailableExplanation}
+          Photos are sent to the selected model and stored in the selected
+          backend's chat history.
         </p>
       )}
       {error !== null && (

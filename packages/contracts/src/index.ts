@@ -33,6 +33,9 @@ export const CHAT_IMAGE_MAX_PIXELS = 64_000_000;
 export const CHAT_IMAGE_MAX_DIMENSION = 2_000;
 /** Pi's resize helper bounds encoded base64 below 4.5 MiB. */
 export const CHAT_IMAGE_MAX_BASE64_BYTES = Math.floor(4.5 * 1024 * 1024);
+/** On-demand history may return a bounded, unmodified Codex source image. */
+export const CHAT_IMAGE_MAX_RESPONSE_BASE64_BYTES =
+  Math.ceil(CHAT_IMAGE_MAX_SOURCE_BYTES / 3) * 4;
 
 function hasBytes(
   bytes: Uint8Array,
@@ -241,7 +244,7 @@ export const ChatImageResponseSchema = z
     data: z
       .string()
       .min(1)
-      .max(CHAT_IMAGE_MAX_BASE64_BYTES)
+      .max(CHAT_IMAGE_MAX_RESPONSE_BASE64_BYTES)
       .regex(
         /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,
       ),
@@ -498,6 +501,12 @@ export const WorkspacePreflightResponseSchema = z.object({
     .nullable(),
   changes: LocalChangeSummarySchema.nullable(),
 });
+export const WorkspacePreflightQuerySchema = z
+  .object({ runtime: RuntimeKindSchema.optional() })
+  .strict();
+export type WorkspacePreflightQuery = z.infer<
+  typeof WorkspacePreflightQuerySchema
+>;
 export type WorkspacePreflightResponse = z.infer<
   typeof WorkspacePreflightResponseSchema
 >;

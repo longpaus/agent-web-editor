@@ -1705,12 +1705,15 @@ describe("live streaming", () => {
     const user = userEvent.setup();
     const { queryClient } = renderPane();
     await screen.findByRole("heading", { name: "Example thread" });
+    const composer = await screen.findByRole("textbox", { name: "Message Pi" });
 
     const image = new File([new Uint8Array([1, 2, 3])], "queued.png", {
       type: "image/png",
     });
-    fireEvent.change(screen.getByLabelText("＋ Add photos"), {
-      target: { files: [image] },
+    const form = composer.closest("form");
+    if (form === null) throw new Error("Expected a composer form");
+    fireEvent.drop(form, {
+      dataTransfer: { types: ["Files"], files: [image] },
     });
     await user.click(screen.getByRole("button", { name: "Steer current run" }));
 

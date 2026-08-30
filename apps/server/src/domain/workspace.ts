@@ -507,11 +507,14 @@ export class WorkspaceService {
     };
   }
 
-  public async workspacePreflight(projectId: ProjectId) {
+  public async workspacePreflight(
+    projectId: ProjectId,
+    runtime: RuntimeKind = this.adapters.defaultKind,
+  ) {
     const projectRoot = await this.requireProjectRoot(projectId);
     const preflight = await this.worktreeManager.preflight(projectRoot);
     const imageInput = await inspectImageInput(
-      this.adapters.get("pi"),
+      this.adapters.get(runtime),
       projectRoot,
     );
     return { ...preflight, imageInput };

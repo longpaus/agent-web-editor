@@ -67,6 +67,18 @@ class FakeRuntime implements AgentRuntime {
   }
 }
 
+class ImageCapabilityRuntime extends FakeRuntime {
+  public constructor(
+    private readonly capability: "supported" | "unsupported" | "unknown",
+  ) {
+    super();
+  }
+
+  public inspectImageInput() {
+    return Promise.resolve(this.capability);
+  }
+}
+
 class PromptingSession implements OpenRuntimeSession {
   public readonly id = "10000000-0000-4000-8000-000000000001";
 
@@ -225,6 +237,34 @@ function multipartChatRequest(
 }
 
 describe("credential-free project API", () => {
+  it("checks image support on the runtime selected by workspace preflight", async () => {
+    const paths = await directories();
+    const config = parseConfig({
+      argv: [],
+      environment: { PI_WEB_STATE_DIR: paths.state },
+    });
+    const server = await buildServer({
+      config,
+      runtimes: {
+        pi: new ImageCapabilityRuntime("unsupported"),
+        codex: new ImageCapabilityRuntime("supported"),
+      },
+      logger: false,
+    });
+    const project =
+      await server.workspaceContext.workspace.registerSelectedProject(
+        paths.project,
+      );
+    const response = await server.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-preflight?runtime=codex`,
+      headers: { host },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ imageInput: "supported" });
+    await server.close();
+  });
+
   it("returns one bounded latest page and loads older history by opaque cursor", async () => {
     const paths = await directories();
     const config = parseConfig({

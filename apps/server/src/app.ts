@@ -34,6 +34,7 @@ import {
   ThreadIdSchema,
   TranscriptPageQuerySchema,
   UpdateProjectRequestSchema,
+  WorkspacePreflightQuerySchema,
   type TerminalErrorCode,
   type TerminalServerFrame,
 } from "@pi-web/contracts";
@@ -303,7 +304,7 @@ function safeError(error: unknown): {
       chat_image_input_unsupported: {
         status: 409,
         code: "chat_image_input_unsupported",
-        message: "The selected Pi model or settings cannot receive images.",
+        message: "The selected agent model or settings cannot receive images.",
       },
       chat_image_count_exceeded: {
         status: 413,
@@ -653,7 +654,11 @@ export async function buildServer(
     "/api/projects/:projectId/workspace-preflight",
     async (request) => {
       const params = projectParamsSchema.parse(request.params);
-      return await workspace.workspacePreflight(params.projectId);
+      const query = WorkspacePreflightQuerySchema.parse(request.query);
+      return await workspace.workspacePreflight(
+        params.projectId,
+        query.runtime,
+      );
     },
   );
   server.post("/api/projects/:projectId/threads/start", async (request) => {

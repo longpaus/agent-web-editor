@@ -77,6 +77,26 @@ pages plus one quiet diagnostic. Nothing writes to Codex storage.
 If app-server begins returning historical tools itself, this private-format
 reader should be removed and the protocol should become the sole source again.
 
+## Image input and history
+
+Image capability follows the effective Codex model reported by app-server's
+`model/list` and `thread/resume` responses. A known text-only model rejects an
+image-bearing prompt before dispatch; an unknown catalogue result remains
+attemptable so the native request is authoritative. Prompting and steering send
+one optional text item followed by ordered `localImage` items.
+
+Before dispatch, the adapter revalidates the bounded JPEG, PNG, or WebP bytes
+and their SHA-256 digest. It stores them as private, content-addressed files at
+`PI_WEB_CODEX_HOME/pi-web-image-attachments/v1/<thread-id>/<digest>.<ext>` (or
+the equivalent resolved Codex home). Stored user-message paths project back to
+opaque image references only when they name that exact thread-owned directory;
+remote URLs, outside paths, links, and malformed files are never read. Image
+bytes load on demand through the existing project/thread-authorized route.
+
+These files are native-adjacent Codex history state. They never enter the
+application database or project workspace, and content addressing makes prompt
+recovery and accepted-command retries reuse the same file.
+
 ## Configuration
 
 `PI_WEB_CODEX_BIN` selects the executable (default `codex`, resolved on PATH).

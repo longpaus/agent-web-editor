@@ -218,8 +218,13 @@ describe("pending same-worktree continuation", () => {
       type: "image/png",
     });
 
-    fireEvent.change(await screen.findByLabelText("＋ Add photos"), {
-      target: { files: [image] },
+    const composer = await screen.findByRole("textbox", {
+      name: "First message",
+    });
+    const form = composer.closest("form");
+    if (form === null) throw new Error("Expected a composer form");
+    fireEvent.drop(form, {
+      dataTransfer: { types: ["Files"], files: [image] },
     });
     expect(
       await screen.findByRole("list", { name: "Attached photos" }),
@@ -247,6 +252,24 @@ describe("pending same-worktree continuation", () => {
 // said "New chat", and the only feedback was an 11.5px grey hint -- it read
 // as "my Enter key did not register".
 describe("NewChatPane while the workspace is being prepared", () => {
+  it("preflights image support for the selected Codex runtime", async () => {
+    renderNewChat({ imageInput: "supported" }, false, {
+      defaultRuntime: "codex",
+      backends: [
+        { kind: "pi", available: true, reason: null },
+        { kind: "codex", available: true, reason: null },
+      ],
+    });
+    await screen.findByRole("textbox", { name: "First message" });
+    await waitFor(() => {
+      expect(api.getWorkspacePreflight).toHaveBeenCalledWith(
+        projectId,
+        "codex",
+      );
+    });
+    expect(screen.queryByLabelText("＋ Add photos")).not.toBeInTheDocument();
+  });
+
   it("falls back to Pi when the default Codex backend is unavailable", async () => {
     const user = userEvent.setup();
     api.startThread.mockResolvedValue({ thread: { id: threadId } });

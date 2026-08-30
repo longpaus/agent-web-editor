@@ -20,15 +20,6 @@ function Harness({
         images={attachments.images}
         error={attachments.error}
         onRemove={attachments.remove}
-        onAdd={(files) => {
-          attachments.addFiles(files, "picker");
-        }}
-        disabled={capability === "unsupported"}
-        unavailableExplanation={
-          capability === "unsupported"
-            ? "The selected Pi model or settings cannot receive images."
-            : undefined
-        }
       />
       <textarea aria-label="Message" onPaste={attachments.onPaste} />
     </form>
@@ -144,29 +135,35 @@ describe("chat image attachment input", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview");
   });
 
-  it("refuses clipboard images when Pi cannot receive them", () => {
+  it("shows no file-picker row or unsupported explanation", () => {
     render(<Harness capability="unsupported" />);
-    expect(screen.getByLabelText("＋ Add photos")).toHaveAccessibleDescription(
-      "The selected Pi model or settings cannot receive images.",
-    );
+    expect(screen.queryByLabelText("＋ Add photos")).not.toBeInTheDocument();
     fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), {
       clipboardData: {
         items: [{ kind: "file", type: "image/png", getAsFile: () => png() }],
       },
     });
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "cannot receive images",
-    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Attached photos" })).toBeNull();
-    expect(screen.getByLabelText("＋ Add photos")).toBeDisabled();
   });
 
-  it("uses the accessible file input as the third ingestion path", () => {
-    render(<Harness />);
-    const input = screen.getByLabelText("＋ Add photos");
-    fireEvent.change(input, { target: { files: [png("picked.webp")] } });
+  it("retains pending images when capability becomes unsupported", () => {
+    const view = render(<Harness capability="supported" />);
+    const form = screen
+      .getByRole("textbox", { name: "Message" })
+      .closest("form");
+    if (form === null) throw new Error("Expected a composer form");
+    fireEvent.drop(form, {
+      dataTransfer: { types: ["Files"], files: [png()] },
+    });
     expect(
-      screen.getByRole("img", { name: "Preview of picked.webp" }),
+      screen.getByRole("img", { name: "Preview of shot.png" }),
     ).toBeInTheDocument();
+
+    view.rerender(<Harness capability="unsupported" />);
+    expect(
+      screen.getByRole("img", { name: "Preview of shot.png" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("＋ Add photos")).not.toBeInTheDocument();
   });
 });

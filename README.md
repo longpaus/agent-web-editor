@@ -71,6 +71,11 @@ Codex state root; it otherwise follows `CODEX_HOME` and then `~/.codex`.
 `PI_WEB_CODEX_REPLAY_TOOLS=off` disables private-format replay without disabling
 messages, prompting, or live tools.
 
+Image attachments work with image-capable Pi and Codex models. Codex stores
+accepted source images as private, content-addressed history state beneath its
+resolved state root and sends them to app-server as local-image inputs; image
+bytes and native paths never enter project files or application metadata.
+
 See the [documentation front door](docs/README.md),
 [architecture overview](docs/architecture/overview.md), and
 [development workflows](docs/development/workflows.md).

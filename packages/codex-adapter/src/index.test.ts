@@ -1,10 +1,12 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RuntimeFailure, type RuntimeEvent } from "@pi-web/agent-runtime";
+import { ChatImageIdSchema } from "@pi-web/contracts";
 
 import {
   CodexAgentRuntime,
@@ -17,6 +19,34 @@ import type { CodexTransport } from "./client.js";
 const THREAD = "019fa011-c136-7dc0-8c67-e5f7926bd517";
 const OTHER = "019fa2af-fc3c-7120-bbf5-9e970b2b7dd4";
 const temporaryRoots: string[] = [];
+
+function png(width = 1, height = 1): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+  bytes.set([73, 72, 68, 82], 12);
+  bytes.set(
+    [
+      (width >>> 24) & 255,
+      (width >>> 16) & 255,
+      (width >>> 8) & 255,
+      width & 255,
+      (height >>> 24) & 255,
+      (height >>> 16) & 255,
+      (height >>> 8) & 255,
+      height & 255,
+    ],
+    16,
+  );
+  return bytes;
+}
+
+function imageInput(data = png()) {
+  return {
+    mimeType: "image/png" as const,
+    data,
+    digest: createHash("sha256").update(data).digest("hex"),
+  };
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -76,6 +106,14 @@ class ScriptedServer implements CodexTransport {
             code: -32601,
             message: `no script for ${String(frame.method)}`,
           },
+        });
+        return;
+      }
+      if (answer instanceof Error) {
+        this.push({
+          jsonrpc: "2.0",
+          id: frame.id,
+          error: { code: -32_000, message: answer.message },
         });
         return;
       }
@@ -186,6 +224,48 @@ describe("CodexAgentRuntime.discover", () => {
     await expect(runtime.discover("/repo")).rejects.toMatchObject({
       code: "unavailable",
     });
+  });
+});
+
+describe("CodexAgentRuntime image capability", () => {
+  it("reads image support from the default app-server model", async () => {
+    const server = new ScriptedServer({
+      "model/list": {
+        data: [
+          {
+            id: "gpt-text",
+            model: "gpt-text",
+            isDefault: true,
+            inputModalities: ["text"],
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+    await expect(runtimeOver(server).inspectImageInput()).resolves.toBe(
+      "unsupported",
+    );
+  });
+
+  it("treats omitted modalities from an older app-server as image capable", async () => {
+    const server = new ScriptedServer({
+      "model/list": {
+        data: [{ id: "legacy", model: "legacy", isDefault: true }],
+        nextCursor: null,
+      },
+    });
+    await expect(runtimeOver(server).inspectImageInput()).resolves.toBe(
+      "supported",
+    );
+  });
+
+  it("reports unknown when the model catalogue is malformed", async () => {
+    const server = new ScriptedServer({
+      "model/list": { data: "not-a-list", nextCursor: null },
+    });
+    await expect(runtimeOver(server).inspectImageInput()).resolves.toBe(
+      "unknown",
+    );
   });
 });
 
@@ -622,24 +702,235 @@ describe("CodexOpenSession", () => {
     await session.dispose();
   });
 
-  it("rejects image input before dispatching a Codex turn", async () => {
-    const { server, session } = await opened();
+  it("rejects image input when the resumed Codex model is text-only", async () => {
+    const { server, session } = await opened({
+      "thread/resume": { thread: thread(), model: "gpt-text" },
+      "model/list": {
+        data: [
+          {
+            id: "gpt-text",
+            model: "gpt-text",
+            inputModalities: ["text"],
+          },
+        ],
+        nextCursor: null,
+      },
+    });
     await expect(
       session.prompt({
         text: "Inspect this",
-        images: [
-          {
-            mimeType: "image/png",
-            data: new Uint8Array([1, 2, 3]),
-            digest: "0".repeat(64),
-          },
-        ],
+        images: [imageInput()],
       }),
     ).rejects.toMatchObject({
       code: "rejected",
       message: "chat_image_input_unsupported",
     });
     expect(server.sentAll("turn/start")).toHaveLength(0);
+    await session.dispose();
+  });
+
+  it("stores validated images and dispatches ordered localImage input", async () => {
+    const home = await mkdtemp(join(tmpdir(), "codex-images-"));
+    temporaryRoots.push(home);
+    const image = imageInput();
+    const dispatch = { id: "00000000-0000-4000-8000-0000000000dd" };
+    const storedPath = join(
+      home,
+      "pi-web-image-attachments",
+      "v1",
+      THREAD,
+      `${image.digest}.png`,
+    );
+    const { server, session } = await opened(
+      {
+        "thread/resume": { thread: thread(), model: "gpt-vision" },
+        "model/list": {
+          data: [
+            {
+              id: "gpt-vision",
+              model: "gpt-vision",
+              inputModalities: ["text", "image"],
+            },
+          ],
+          nextCursor: null,
+        },
+        "turn/start": {
+          turn: { id: "turn-image", status: "inProgress", items: [] },
+        },
+        "thread/read": {
+          thread: thread({
+            turns: [
+              {
+                id: "turn-image",
+                status: "completed",
+                items: [
+                  {
+                    type: "userMessage",
+                    id: "user-image",
+                    clientId: dispatch.id,
+                    content: [
+                      { type: "text", text: "Inspect this" },
+                      { type: "localImage", path: storedPath },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      },
+      { codexHome: home },
+    );
+    const input = { text: "Inspect this", images: [image] };
+    const acceptance = await session.prompt(input, dispatch);
+    expect(acceptance.accepted).toBe(true);
+    const params = server.sentParams("turn/start");
+    expect(params?.input).toEqual([
+      { type: "text", text: "Inspect this", text_elements: [] },
+      {
+        type: "localImage",
+        path: storedPath,
+      },
+    ]);
+    expect(await readFile(storedPath)).toEqual(Buffer.from(image.data));
+    await expect(session.recoverPrompt(input, dispatch)).resolves.toEqual({
+      outcome: "accepted",
+    });
+    await expect(session.snapshot()).resolves.toMatchObject({
+      transcript: [
+        {
+          id: "user-image",
+          images: [{ id: image.digest, mimeType: "image/png" }],
+        },
+      ],
+      imageInput: "supported",
+    });
+    if (session.readImage === undefined) throw new Error("Expected image read");
+    await expect(
+      session.readImage(ChatImageIdSchema.parse(image.digest)),
+    ).resolves.toMatchObject({
+      id: image.digest,
+      mimeType: "image/png",
+      data: Buffer.from(image.data).toString("base64"),
+    });
+    acceptance.discardEvents();
+    await session.dispose();
+  });
+
+  it("supports image-only prompts and image-bearing active steering", async () => {
+    const home = await mkdtemp(join(tmpdir(), "codex-image-steer-"));
+    temporaryRoots.push(home);
+    const image = imageInput();
+    const { server, session } = await opened(
+      {
+        "thread/resume": { thread: thread(), model: "gpt-vision" },
+        "model/list": {
+          data: [
+            {
+              id: "gpt-vision",
+              model: "gpt-vision",
+              inputModalities: ["text", "image"],
+            },
+          ],
+          nextCursor: null,
+        },
+        "turn/start": {
+          turn: { id: "turn-image-only", status: "inProgress", items: [] },
+        },
+        "turn/steer": {},
+      },
+      { codexHome: home },
+    );
+    const acceptance = await session.prompt({ text: "", images: [image] });
+    expect(acceptance.accepted).toBe(true);
+    expect(server.sentParams("turn/start")?.input).toEqual([
+      expect.objectContaining({ type: "localImage" }),
+    ]);
+    await session.steer({ text: "Look closer", images: [image] });
+    expect(server.sentParams("turn/steer")?.input).toEqual([
+      { type: "text", text: "Look closer", text_elements: [] },
+      expect.objectContaining({ type: "localImage" }),
+    ]);
+    acceptance.discardEvents();
+    await session.dispose();
+  });
+
+  it("removes a newly stored image after a definitive native rejection", async () => {
+    const home = await mkdtemp(join(tmpdir(), "codex-image-rejected-"));
+    temporaryRoots.push(home);
+    const image = imageInput();
+    const storedPath = join(
+      home,
+      "pi-web-image-attachments",
+      "v1",
+      THREAD,
+      `${image.digest}.png`,
+    );
+    const { session } = await opened(
+      {
+        "thread/resume": { thread: thread(), model: "gpt-vision" },
+        "model/list": {
+          data: [
+            {
+              id: "gpt-vision",
+              model: "gpt-vision",
+              inputModalities: ["text", "image"],
+            },
+          ],
+          nextCursor: null,
+        },
+        "turn/start": new Error("model rejected image"),
+      },
+      { codexHome: home },
+    );
+    const acceptance = await session.prompt({
+      text: "Inspect",
+      images: [image],
+    });
+    expect(acceptance.accepted).toBe(false);
+    await expect(readFile(storedPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await session.dispose();
+  });
+
+  it("retains a stored image when dispatch acceptance is ambiguous", async () => {
+    const home = await mkdtemp(join(tmpdir(), "codex-image-ambiguous-"));
+    temporaryRoots.push(home);
+    const image = imageInput();
+    const storedPath = join(
+      home,
+      "pi-web-image-attachments",
+      "v1",
+      THREAD,
+      `${image.digest}.png`,
+    );
+    const server = new ScriptedServer({
+      "thread/resume": { thread: thread(), model: "gpt-vision" },
+      "model/list": {
+        data: [
+          {
+            id: "gpt-vision",
+            model: "gpt-vision",
+            inputModalities: ["text", "image"],
+          },
+        ],
+        nextCursor: null,
+      },
+      "turn/start": () => {
+        server.close();
+        return { turn: { id: "possibly-accepted" } };
+      },
+    });
+    const session = await runtimeOver(server, undefined, {
+      codexHome: home,
+    }).open("/repo", THREAD);
+    const acceptance = await session.prompt({
+      text: "Inspect",
+      images: [image],
+    });
+    expect(acceptance.accepted).toBe(false);
+    expect(await readFile(storedPath)).toEqual(Buffer.from(image.data));
     await session.dispose();
   });
 

@@ -45,6 +45,11 @@ specifications, designs, code, or tests.
   selection; bounded multipart prompt/steer transport; Pi multimodal delivery,
   idempotent recovery, native-history image refs, and authorized on-demand
   rendering without a staging store or local path exposure.
+- [Codex image attachments](2026-08-29-codex-image-attachments.md) — replaced the
+  unconditional Codex image rejection with model-aware capability discovery,
+  private content-addressed thread storage, ordered app-server `localImage`
+  prompt/steer input, exact recovery, and authorized opaque history refs while
+  preserving Pi behavior.
 - [Default-model thread and worktree naming](2026-08-29-default-model-thread-naming.md) —
   changed automatic first-prompt naming from a distinct lower-cost
   same-provider model to the selected project's configured default Pi model,

@@ -217,9 +217,14 @@ export async function setExpanded(
     },
   );
 }
-export async function getWorkspacePreflight(projectId: ProjectId) {
+export async function getWorkspacePreflight(
+  projectId: ProjectId,
+  runtime?: RuntimeKind,
+) {
   return await request(
-    `/api/projects/${projectId}/workspace-preflight`,
+    `/api/projects/${projectId}/workspace-preflight${
+      runtime === undefined ? "" : `?runtime=${encodeURIComponent(runtime)}`
+    }`,
     WorkspacePreflightResponseSchema,
   );
 }

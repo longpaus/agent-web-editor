@@ -8,7 +8,7 @@ belong here.
 | Capability                                                        | Current version | Proposed version | Proposal | Implementation | Related open plan                                                                                   |
 | ----------------------------------------------------------------- | --------------- | ---------------- | -------- | -------------- | --------------------------------------------------------------------------------------------------- |
 | [Initial agent workspace](initial-workspace.md)                   | None            | 2                | Approved | In progress    | [Initial agent workspace](../exec-plans/active/2026-08-15-initial-agent-workspace.md)               |
-| [Chat image attachments](chat-image-attachments.md)               | 1               | None             | None     | Current        | —                                                                                                   |
+| [Chat image attachments](chat-image-attachments.md)               | 3               | None             | None     | Current        | —                                                                                                   |
 | [Scalable conversation history](scalable-conversation-history.md) | None            | 1                | Approved | In progress    | [Scalable conversation history](../exec-plans/active/2026-08-16-scalable-conversation-history.md)   |
 | [Thread management](thread-management.md)                         | 3               | None             | None     | Current        | —                                                                                                   |
 | [Thread workspaces](thread-workspaces.md)                         | 3               | 4                | Approved | In progress    | [Same-worktree new-chat command](../exec-plans/active/2026-08-29-same-worktree-new-chat-command.md) |
@@ -35,15 +35,22 @@ agent, no copied context/Git operation, and Local checkout exclusion remain.
 The user approved product version 4 and plan version 2 on 2026-08-29;
 refactoring is active.
 
-Chat image attachments version 1 is Current. The user approved product version 1
-on 2026-08-29, and the implementation was verified the same day. It lets users
-drag or paste JPEG, PNG, or WebP images into a specific new-chat or thread
+Chat image attachments version 3 is Current. The user approved versions 1 and 2
+on 2026-08-29, then explicitly requested version 3's quiet unsupported state the
+same day. Users can
+drop or paste JPEG, PNG, or WebP images into a specific new-chat or thread
 composer (with an accessible Add photos alternative), preview and remove up to
-four bounded images, and send text-plus-image or image-only Pi prompts and
-steering messages. Pending photos are page-memory only and multipart command
-bodies avoid a staging store. Accepted images remain in native Pi history, load
-on demand in typed user messages through authorized opaque references, and
-never expose local paths; arbitrary Markdown images remain disabled.
+four bounded images, and send text-plus-image or image-only Pi or Codex prompts
+and steering messages when the effective model supports images. Pending photos
+are page-memory only and multipart command bodies avoid a staging store. Pi
+retains accepted images in native history; Codex retains private,
+content-addressed source files in adapter-owned state. Both load on demand in
+typed user messages through authorized opaque references and never expose local
+paths. Arbitrary remote URLs, external local paths, project/SQLite copies, and
+Markdown images remain disabled. Version 3 removes the file-picker row from all
+composers while retaining pane-scoped drop and focused paste; a
+known-unsupported model also shows no capability explanation. Pending previews
+remain visible if capability changes after attachment.
 
 Scalable conversation history is a separate Approved capability for bounded
 latest pages, progressive older-history navigation, polite live following, and

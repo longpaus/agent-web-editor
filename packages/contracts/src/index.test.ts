@@ -26,6 +26,7 @@ import {
   TranscriptPageSchema,
   TerminalServerFrameSchema,
   TerminalsResponseSchema,
+  WorkspacePreflightQuerySchema,
   TERMINAL_MAX_PER_SCOPE,
 } from "./index.js";
 
@@ -98,6 +99,16 @@ describe("wire contracts", () => {
         mimeType: "image/svg+xml",
         data: "iVBORw0KGgo=",
       }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only a known optional runtime for workspace preflight", () => {
+    expect(WorkspacePreflightQuerySchema.parse({ runtime: "codex" })).toEqual({
+      runtime: "codex",
+    });
+    expect(WorkspacePreflightQuerySchema.parse({})).toEqual({});
+    expect(
+      WorkspacePreflightQuerySchema.safeParse({ runtime: "claude" }).success,
     ).toBe(false);
   });
 

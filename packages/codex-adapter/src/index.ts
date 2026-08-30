@@ -8,6 +8,7 @@ import {
   type OpenRuntimeSession,
   type PromptAcceptance,
   type PromptRecovery,
+  type RuntimeImageContent,
   type RuntimeEvent,
   type RuntimePromptDispatch,
   type RuntimeSessionDescriptor,
@@ -15,6 +16,8 @@ import {
   type RuntimeUserInput,
 } from "@pi-web/agent-runtime";
 import {
+  type ChatImageId,
+  type ImageInputCapability,
   TranscriptCursorSchema,
   TranscriptPageSchema,
   type TranscriptCursor,
@@ -24,6 +27,7 @@ import {
 import { z } from "zod";
 
 import { CodexClient, type CodexTransport } from "./client.js";
+import { CodexImageStore, type PreparedCodexInput } from "./images.js";
 import {
   mapNotification,
   sessionDescriptor,
@@ -108,6 +112,10 @@ const DISCOVERY_MAX_PAGES = 50;
 const CREATION_MARKER_PREFIX = "pi-web:create:";
 
 const threadEnvelopeSchema = z.object({ thread: z.object({ id: z.uuid() }) });
+const resumedThreadEnvelopeSchema = z.object({
+  thread: z.object({ id: z.uuid() }),
+  model: z.string().min(1).optional(),
+});
 const startedThreadEnvelopeSchema = z.object({
   thread: z.object({ id: z.uuid(), threadSource: z.string() }),
 });
@@ -141,17 +149,54 @@ const turnsSchema = z.object({
     .array(z.object({ items: z.array(z.unknown()).default([]) }))
     .default([]),
 });
+const modelListSchema = z.object({
+  data: z.array(z.unknown()).default([]),
+  nextCursor: z.string().nullish(),
+});
+const modelSchema = z.object({
+  id: z.string().min(1),
+  model: z.string().min(1),
+  isDefault: z.boolean().default(false),
+  inputModalities: z.array(z.enum(["text", "image", "audio"])).optional(),
+});
+const localImagePartSchema = z.object({
+  type: z.literal("localImage"),
+  path: z.string(),
+});
+
+type CodexUserInputItem =
+  | { type: "text"; text: string; text_elements: [] }
+  | { type: "localImage"; path: string };
+
+function sameUserInput(
+  recorded: unknown[],
+  expected: readonly CodexUserInputItem[],
+): boolean {
+  if (recorded.length !== expected.length) return false;
+  return recorded.every((rawPart, index) => {
+    const expectedPart = expected[index];
+    if (expectedPart === undefined) return false;
+    if (expectedPart.type === "text") {
+      const parsed = textPartSchema.safeParse(rawPart);
+      return parsed.success && parsed.data.text === expectedPart.text;
+    }
+    const parsed = localImagePartSchema.safeParse(rawPart);
+    return parsed.success && parsed.data.path === expectedPart.path;
+  });
+}
 
 export class CodexAgentRuntime implements AgentRuntime {
   private readonly client: CodexClient;
   private readonly sandbox: CodexSandbox;
   private readonly codexHome: string;
   private readonly replayTools: boolean;
+  private readonly imageStore: CodexImageStore;
 
   public constructor(options: CodexAgentRuntimeOptions = {}) {
     this.sandbox = options.sandbox ?? "workspace-write";
     this.codexHome = parseCodexHome(options.codexHome);
     this.replayTools = options.replayTools ?? true;
+    this.imageStore = new CodexImageStore(this.codexHome);
     const command = options.command ?? "codex";
     const connect =
       options.connect ??
@@ -167,8 +212,44 @@ export class CodexAgentRuntime implements AgentRuntime {
     );
   }
 
-  public inspectImageInput(): Promise<"unsupported"> {
-    return Promise.resolve("unsupported");
+  public inspectImageInput(): Promise<ImageInputCapability> {
+    return this.inspectModelImageInput();
+  }
+
+  private async inspectModelImageInput(
+    selectedModel?: string,
+  ): Promise<ImageInputCapability> {
+    try {
+      let cursor: string | undefined;
+      for (let page = 0; page < DISCOVERY_MAX_PAGES; page += 1) {
+        const raw = await this.client.request("model/list", {
+          limit: DISCOVERY_PAGE_LIMIT,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        const parsed = modelListSchema.safeParse(raw);
+        if (!parsed.success) return "unknown";
+        for (const entry of parsed.data.data) {
+          const model = modelSchema.safeParse(entry);
+          if (!model.success) continue;
+          const selected =
+            selectedModel === undefined
+              ? model.data.isDefault
+              : model.data.id === selectedModel ||
+                model.data.model === selectedModel;
+          if (!selected) continue;
+          // Older app-server versions omit this field and historically exposed
+          // text + image input, so absence retains that compatible behaviour.
+          const modalities = model.data.inputModalities ?? ["text", "image"];
+          return modalities.includes("image") ? "supported" : "unsupported";
+        }
+        const next = parsed.data.nextCursor;
+        if (next === null || next === undefined || next === "") break;
+        cursor = next;
+      }
+      return "unknown";
+    } catch {
+      return "unknown";
+    }
   }
 
   public async discover(
@@ -314,17 +395,26 @@ export class CodexAgentRuntime implements AgentRuntime {
     projectPath: string,
     sessionId: string,
   ): Promise<OpenRuntimeSession> {
-    await this.client.request("thread/resume", {
+    const raw = await this.client.request("thread/resume", {
       threadId: sessionId,
       cwd: projectPath,
       approvalPolicy: APPROVAL_POLICY,
       sandbox: this.sandbox,
     });
+    const resumed = resumedThreadEnvelopeSchema.safeParse(raw);
+    if (!resumed.success || resumed.data.thread.id !== sessionId)
+      throw new RuntimeFailure(
+        "malformed",
+        "Codex did not resume the requested thread.",
+      );
     return new CodexOpenSession(
       this.client,
       sessionId,
       this.codexHome,
       this.replayTools,
+      this.imageStore,
+      resumed.data.model,
+      (model) => this.inspectModelImageInput(model),
     );
   }
 
@@ -423,6 +513,11 @@ class CodexOpenSession implements OpenRuntimeSession {
     public readonly id: string,
     private readonly codexHome: string,
     private readonly replayTools: boolean,
+    private readonly imageStore: CodexImageStore,
+    private readonly model: string | undefined,
+    private readonly inspectModelImageInput: (
+      model: string | undefined,
+    ) => Promise<ImageInputCapability>,
   ) {
     this.unsubscribeNotifications = client.onNotification((method, params) => {
       this.receive(method, params);
@@ -439,16 +534,22 @@ class CodexOpenSession implements OpenRuntimeSession {
 
   public async snapshot(): Promise<RuntimeSnapshot> {
     const thread = await this.readThread();
+    const imageInput = await this.inspectModelImageInput(this.model);
     return {
       sessionId: this.id,
-      transcript: transcriptFromThread(thread),
+      transcript: transcriptFromThread(thread, (path) =>
+        this.imageStore.referenceForPath(this.id, path),
+      ),
       diagnostics: [],
+      ...(imageInput === "unknown" ? {} : { imageInput }),
     };
   }
 
   public async latestTranscriptPage(): Promise<TranscriptPage> {
     const thread = await this.readThread();
-    this.turns = transcriptTurnsFromThread(thread);
+    this.turns = transcriptTurnsFromThread(thread, (path) =>
+      this.imageStore.referenceForPath(this.id, path),
+    );
     this.rollout = null;
     this.replayDiagnostic = null;
     this.replayWarningAdded = false;
@@ -647,9 +748,9 @@ class CodexOpenSession implements OpenRuntimeSession {
     input: RuntimeUserInput | string,
     dispatch?: RuntimePromptDispatch,
   ): Promise<PromptAcceptance> {
-    const text = this.textInput(input);
     if (this.disposed)
       throw new RuntimeFailure("unavailable", "Runtime session is closed.");
+    const prepared = await this.prepareInput(input, true);
     if (this.bufferedEvents !== null)
       throw new RuntimeFailure("busy", "A prompt preflight is already active.");
     const buffer: RuntimeEvent[] = [];
@@ -688,13 +789,15 @@ class CodexOpenSession implements OpenRuntimeSession {
     try {
       const raw = await this.client.request("turn/start", {
         threadId: this.id,
-        input: [{ type: "text", text, text_elements: [] }],
+        input: this.appServerInput(prepared),
         ...(dispatch === undefined ? {} : { clientUserMessageId: dispatch.id }),
       });
       const parsed = turnEnvelopeSchema.safeParse(raw);
       if (!parsed.success) throw new RuntimeFailure("malformed", "no turn");
       turnId = parsed.data.turn.id;
     } catch (error) {
+      if (error instanceof RuntimeFailure && error.code === "provider")
+        await this.imageStore.discardCreated(prepared);
       if (this.promptPreflight === preflight) this.promptPreflight = undefined;
       discardEvents();
       settleResolve("failed");
@@ -720,7 +823,8 @@ class CodexOpenSession implements OpenRuntimeSession {
     input: RuntimeUserInput | string,
     dispatch: RuntimePromptDispatch,
   ): Promise<PromptRecovery> {
-    const text = this.textInput(input);
+    const prepared = await this.prepareInput(input, false);
+    const expected = this.appServerInput(prepared);
     const raw = await this.client.request("thread/read", {
       threadId: this.id,
       includeTurns: true,
@@ -735,36 +839,67 @@ class CodexOpenSession implements OpenRuntimeSession {
       for (const item of turn.items) {
         const parsed = userMessageWithClientIdSchema.safeParse(item);
         if (!parsed.success || parsed.data.clientId !== dispatch.id) continue;
-        const recorded = parsed.data.content
-          .map((part) => textPartSchema.safeParse(part))
-          .filter((part) => part.success)
-          .map((part) => part.data.text)
-          .join("\n");
-        if (recorded === text) return { outcome: "accepted" };
+        if (sameUserInput(parsed.data.content, expected))
+          return { outcome: "accepted" };
       }
     return { outcome: "not_accepted" };
   }
 
   public async steer(input: RuntimeUserInput | string): Promise<void> {
-    const text = this.textInput(input);
+    const prepared = await this.prepareInput(input, true);
     const turnId = this.activeTurnId;
     if (turnId === null)
       throw new RuntimeFailure(
         "rejected",
         "There is no running Codex turn to steer.",
       );
-    await this.client.request("turn/steer", {
-      threadId: this.id,
-      input: [{ type: "text", text, text_elements: [] }],
-      expectedTurnId: turnId,
-    });
+    try {
+      await this.client.request("turn/steer", {
+        threadId: this.id,
+        input: this.appServerInput(prepared),
+        expectedTurnId: turnId,
+      });
+    } catch (error) {
+      if (error instanceof RuntimeFailure && error.code === "provider")
+        await this.imageStore.discardCreated(prepared);
+      throw error;
+    }
   }
 
-  private textInput(input: RuntimeUserInput | string): string {
-    if (typeof input === "string") return input;
-    if (input.images.length > 0)
+  public readImage(imageId: ChatImageId): Promise<RuntimeImageContent> {
+    return this.imageStore.read(this.id, imageId);
+  }
+
+  private async prepareInput(
+    input: RuntimeUserInput | string,
+    enforceCapability: boolean,
+  ): Promise<PreparedCodexInput> {
+    if (
+      enforceCapability &&
+      typeof input !== "string" &&
+      input.images.length > 0 &&
+      (await this.inspectModelImageInput(this.model)) === "unsupported"
+    )
       throw new RuntimeFailure("rejected", "chat_image_input_unsupported");
-    return input.text;
+    return await this.imageStore.prepare(this.id, input);
+  }
+
+  private appServerInput(prepared: PreparedCodexInput): CodexUserInputItem[] {
+    return [
+      ...(prepared.text === ""
+        ? []
+        : [
+            {
+              type: "text" as const,
+              text: prepared.text,
+              text_elements: [] as [],
+            },
+          ]),
+      ...prepared.images.map((image) => ({
+        type: "localImage" as const,
+        path: image.path,
+      })),
+    ];
   }
 
   public async stop(): Promise<void> {
@@ -811,7 +946,9 @@ class CodexOpenSession implements OpenRuntimeSession {
     // it names this thread.
     const scoped = threadScopedSchema.safeParse(params);
     if (!scoped.success || scoped.data.threadId !== this.id) return;
-    const event = mapNotification(method, params);
+    const event = mapNotification(method, params, (path) =>
+      this.imageStore.referenceForPath(this.id, path),
+    );
     if (event === null) return;
     if (event.type === "settled") {
       const completion = turnCompletionSchema.safeParse(params);

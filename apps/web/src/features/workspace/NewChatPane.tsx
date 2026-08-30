@@ -205,11 +205,6 @@ export function NewChatPane(props: NewChatPaneProps) {
     queryKey: ["workspace"],
     queryFn: getWorkspace,
   });
-  const preflight = useQuery({
-    queryKey: ["workspace-preflight", projectId],
-    queryFn: () => getWorkspacePreflight(projectId),
-    enabled: continuationSourceThreadId === null,
-  });
   const continuationPreflight = useQuery({
     queryKey: ["continuation-preflight", projectId, continuationSourceThreadId],
     queryFn: () => {
@@ -248,6 +243,17 @@ export function NewChatPane(props: NewChatPaneProps) {
     (resolvedDefaultBackend?.available === false
       ? (fallbackRuntime ?? resolvedDefault)
       : resolvedDefault);
+  const preflightRuntime =
+    runtime === null &&
+    backendChoice === "follow-machine" &&
+    backends.data === undefined
+      ? undefined
+      : selectedRuntime;
+  const preflight = useQuery({
+    queryKey: ["workspace-preflight", projectId, preflightRuntime],
+    queryFn: () => getWorkspacePreflight(projectId, preflightRuntime),
+    enabled: continuationSourceThreadId === null,
+  });
   const continuationThread = workspace.data?.threads.find(
     (thread) => thread.id === continuationSourceThreadId,
   );
@@ -271,14 +277,10 @@ export function NewChatPane(props: NewChatPaneProps) {
   const agentLabel = effectiveRuntime === "codex" ? "Codex" : "Pi";
   const imageInputCapability =
     continuationSourceThreadId === null
-      ? selectedRuntime === "pi"
-        ? (preflight.data?.imageInput ?? "unknown")
-        : "unsupported"
+      ? (preflight.data?.imageInput ?? "unknown")
       : continuationThread === undefined
         ? "unknown"
-        : continuationThread.runtime === "pi"
-          ? (continuationPreflight.data?.imageInput ?? "unknown")
-          : "unsupported";
+        : (continuationPreflight.data?.imageInput ?? "unknown");
   const [text, setText] = useState(() => readDraft(draftKey));
   const textareaRef = useAutoGrow<HTMLTextAreaElement>(text);
   const attachments = useChatAttachments(imageInputCapability, () => {
@@ -380,7 +382,12 @@ export function NewChatPane(props: NewChatPaneProps) {
     // the unchanged `creationKey` deduplicated it server-side -- but the
     // composer is cleared now, so typing again regenerates the key and a
     // second Enter would create a second thread and a second git worktree.
-    if (create.isPending || selectedUnavailable) return;
+    if (
+      create.isPending ||
+      selectedUnavailable ||
+      (attachments.images.length > 0 && imageInputCapability === "unsupported")
+    )
+      return;
     if (
       (value.trim() === "" && attachments.images.length === 0) ||
       (continuationSourceThreadId === null &&
@@ -860,21 +867,6 @@ export function NewChatPane(props: NewChatPaneProps) {
               images={attachments.images}
               error={attachments.error}
               onRemove={attachments.remove}
-              onAdd={(files) => {
-                attachments.addFiles(files, "picker");
-              }}
-              disabled={
-                create.isPending || imageInputCapability === "unsupported"
-              }
-              unavailableExplanation={
-                imageInputCapability === "unsupported"
-                  ? effectiveRuntime === "pi"
-                    ? "The selected Pi model or settings cannot receive images."
-                    : continuationSourceThreadId === null
-                      ? "Codex image input is not supported. Choose Pi to attach photos."
-                      : "Codex image input is not supported for this chat."
-                  : undefined
-              }
             />
             <textarea
               ref={textareaRef}
@@ -930,6 +922,8 @@ export function NewChatPane(props: NewChatPaneProps) {
                 disabled={
                   create.isPending ||
                   selectedUnavailable ||
+                  (attachments.images.length > 0 &&
+                    imageInputCapability === "unsupported") ||
                   (text.trim() === "" && attachments.images.length === 0)
                 }
               >

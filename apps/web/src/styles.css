@@ -2302,33 +2302,6 @@ a:focus-visible {
   background: var(--hover);
   cursor: pointer;
 }
-.add-photos {
-  position: relative;
-  display: inline-flex;
-  margin: 0.4rem 0.85rem 0;
-  color: var(--text-2);
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-.add-photos:hover:not(.disabled) {
-  color: var(--accent);
-}
-.add-photos.disabled {
-  color: var(--muted);
-  cursor: not-allowed;
-}
-.add-photos input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-.add-photos:focus-within {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 3px;
-}
 .chat-attachment-error,
 .chat-attachment-disclosure {
   margin: 0.25rem 0.85rem 0;

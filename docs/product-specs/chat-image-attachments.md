@@ -1,6 +1,6 @@
 # Chat image attachments
 
-**Current version:** 1
+**Current version:** 3
 
 **Proposed version:** None
 
@@ -8,13 +8,14 @@
 
 **Implementation status:** Current
 
-**Product approval:** Not applicable — no proposed revision
+**Product approval:** Not applicable — no proposed revision; version 3 was approved by the user on 2026-08-29 by explicitly asking to remove the unsupported attachment row
 
 **Subsystem:** New-chat and existing-thread message composition
 
 **Last verified:** 2026-08-29
 
 **Related ExecPlans:** [Chat image attachments](../exec-plans/completed/2026-08-29-chat-image-attachments.md)
+and [Codex image attachments](../exec-plans/completed/2026-08-29-codex-image-attachments.md)
 
 **Related documents:** [Initial agent workspace](initial-workspace.md),
 [architecture overview](../architecture/overview.md), and
@@ -22,9 +23,10 @@
 
 ## Purpose
 
-A user can give Pi visual context without first copying an image into the
-workspace or describing it in text. Photos and screenshots attach to the same
-new-thread prompts, later prompts, and active-run steering messages as text.
+A user can give the selected Pi or Codex backend visual context without first
+copying an image into the workspace or describing it in text. Photos and
+screenshots attach to the same new-thread prompts, later prompts, and active-run
+steering messages as text.
 
 ## Current contract v1
 
@@ -169,3 +171,124 @@ model the image and stores the accepted image in native Pi session history.
 ## Open product questions
 
 - None.
+
+## Current revision v2 — Codex image input
+
+Version 2 extends the same attachment experience to Codex without weakening the
+existing Pi behavior or the shared format, count, size, retry, and rendering
+rules.
+
+### CIA-07 — Images follow the selected backend
+
+When the selected backend and its active model accept image input, a user can
+attach JPEG, PNG, or WebP images to a Codex message in every place version 1
+supports for Pi: the first message of a new chat, a later prompt, a same-worktree
+continuation's first message, and an active-run steering message. Text-plus-image
+and image-only messages are both valid, preserve attachment order, and reach the
+selected backend as one user message.
+
+The attachment control is governed by the effective backend, not by a hard-coded
+Pi/Codex distinction. Switching a pending new chat between capable backends does
+not discard its pending text or images. Switching to a known-incapable backend
+keeps the pending images visible but prevents submission and explains how to
+proceed.
+
+### CIA-08 — Capability is model-aware and rechecked
+
+The application reports image availability from the selected backend's current
+model. A known unsupported model disables attachment and explains that the
+model cannot receive images. An unknown capability may allow attachment, but
+submission rechecks or attempts the native request and must fail visibly rather
+than silently sending text alone. A capability or model change between display
+and submission follows the same keep-and-explain failure behavior as version 1.
+
+Backend unavailability and image-modality unavailability remain distinct: a
+missing or disconnected backend prevents the chat itself, while an otherwise
+usable text-only model prevents only image-bearing submission.
+
+### CIA-09 — Codex history retains accepted attachments
+
+An image accepted by Codex stays associated with its native user message and is
+available after browser and server restart under the same on-demand,
+thread-authorized thumbnail behavior as Pi. Normal snapshots and live events
+carry only bounded opaque image references. No native local path, remote image
+URL, or image bytes enter application metadata or ordinary transcript payloads.
+
+A missing, malformed, or unauthorized Codex image omits only that image and
+surfaces a thread-scoped diagnostic. It does not remove message text or make the
+rest of the conversation unavailable. Images added to a Codex session by an
+external client are rendered only when they use a representation this
+application can authorize without broadening filesystem or network access.
+
+### CIA-10 — Storage, retries, and disclosure remain backend-neutral
+
+Pending images remain page-memory only. After acceptance, image bytes may be
+stored only in the selected runtime's native or adapter-owned state, never in
+the application database or project workspace. Command idempotency includes
+text, image order, format, and content, so retrying one accepted Codex command
+does not create another run, user message, or stored image copy.
+
+The send disclosure names the selected backend and explains that the model
+receives the image and the accepted attachment remains in that backend's chat
+history. Pi's existing normalization and native-history behavior remains
+unchanged.
+
+## Version 2 acceptance criteria
+
+1. A user can attach and send text-plus-image or image-only input to an
+   image-capable Codex chat for new-thread, later-prompt, continuation, and
+   active-steer paths.
+2. Selecting Codex no longer produces an unconditional unsupported warning;
+   the control follows the effective Codex model's reported capability.
+3. A known text-only Codex model disables image-bearing submission without
+   dropping pending text or images, and an unknown or changed capability fails
+   visibly without text-only degradation.
+4. An accepted Codex attachment reappears with its user message after browser
+   and server restart and opens only through the owning project/thread route.
+5. A malformed, missing, outside-root, or externally referenced Codex image
+   never exposes a local path or triggers an arbitrary filesystem or network
+   read.
+6. Retrying the same accepted Codex command creates no duplicate run, message,
+   or stored attachment; a rejected send retains the browser's pending input.
+7. All version 1 Pi acceptance criteria and the arbitrary-Markdown-image ban
+   continue to pass unchanged.
+
+## Version 2 non-goals
+
+- A model picker or automatic model substitution
+- Fetching remote images found in imported or externally created Codex history
+- Rendering arbitrary local-image paths from externally created Codex history
+- Moving pending attachment drafts out of browser page memory
+- Generic file, PDF, video, audio, generated-image, or assistant-image support
+- Changing Pi's image normalization, persistence, or capability rules
+
+## Version 2 open product questions
+
+- None.
+
+## Current revision v3 — Streamlined composer
+
+Version 3 retains all version 2 image transport, storage, history, and capable
+model behavior while removing the file-picker row from every composer.
+
+### CIA-11 — No file-picker row
+
+The composer shows no **Add photos** control or native file-input status.
+Supported and unknown models retain pane-scoped drag-and-drop and focused image
+paste as their attachment ingestion paths. When image input is known
+unsupported, drop and paste attempts are ignored without adding a standalone
+capability explanation or attachment error. This supersedes CIA-01's explicit
+picker requirement and the explanatory-control clauses in CIA-07 and CIA-08.
+
+If images were attached while capability was supported and the capability then
+becomes unsupported, their previews remain available for removal and submission
+stays blocked until capability returns or the images are removed.
+
+### Version 3 acceptance criteria
+
+1. No composer contains **Add photos** or native **No file chosen** text; known
+   unsupported composers also contain no model/settings capability explanation.
+2. Switching from supported to unsupported retains existing previews but hides
+   the picker and prevents image-bearing submission.
+3. Supported and unknown models retain image drop, image paste, and all version
+   2 delivery behavior.

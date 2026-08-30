@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { TranscriptItemSchema } from "@pi-web/contracts";
+import { ChatImageIdSchema, TranscriptItemSchema } from "@pi-web/contracts";
 
 import {
   mapNotification,
@@ -39,6 +39,38 @@ describe("mapThreadItem", () => {
       kind: "message",
       role: "user",
       text: "first\nsecond",
+    });
+  });
+
+  it("maps only adapter-owned local images through the supplied resolver", () => {
+    const trustedPath = "/codex-owned/a.png";
+    const item = contractual(
+      mapThreadItem(
+        {
+          type: "userMessage",
+          id: "image-message",
+          content: [
+            { type: "text", text: "look" },
+            { type: "localImage", path: trustedPath },
+            { type: "localImage", path: "/tmp/untrusted.png" },
+            { type: "image", url: "https://example.invalid/remote.png" },
+          ],
+        },
+        at,
+        (path) =>
+          path === trustedPath
+            ? {
+                id: ChatImageIdSchema.parse("a".repeat(64)),
+                mimeType: "image/png",
+              }
+            : null,
+      ),
+    );
+    expect(item).toMatchObject({
+      kind: "message",
+      role: "user",
+      text: "look",
+      images: [{ id: "a".repeat(64), mimeType: "image/png" }],
     });
   });
 

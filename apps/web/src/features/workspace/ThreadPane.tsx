@@ -832,7 +832,9 @@ export function Composer({
     const submitted = text.trim();
     if (
       runtimeUnavailable ||
-      (submitted === "" && attachments.images.length === 0)
+      (submitted === "" && attachments.images.length === 0) ||
+      (attachments.images.length > 0 &&
+        snapshot.capabilities.imageInput === "unsupported")
     )
       return;
     // Never discard pending photos by interpreting their caption as an app
@@ -904,18 +906,6 @@ export function Composer({
             images={attachments.images}
             error={attachments.error}
             onRemove={attachments.remove}
-            onAdd={(files) => {
-              attachments.addFiles(files, "picker");
-            }}
-            disabled={
-              mutation.isPending ||
-              snapshot.capabilities.imageInput === "unsupported"
-            }
-            unavailableExplanation={
-              snapshot.capabilities.imageInput === "unsupported"
-                ? "The selected Pi model or settings cannot receive images."
-                : undefined
-            }
           />
           <textarea
             ref={textareaRef}
@@ -1004,6 +994,8 @@ export function Composer({
                 runtimeUnavailable ||
                 mutation.isPending ||
                 continuing.isPending ||
+                (attachments.images.length > 0 &&
+                  snapshot.capabilities.imageInput === "unsupported") ||
                 (text.trim() === "" && attachments.images.length === 0)
               }
             >

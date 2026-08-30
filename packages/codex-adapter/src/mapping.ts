@@ -2,7 +2,11 @@ import type {
   RuntimeEvent,
   RuntimeSessionDescriptor,
 } from "@pi-web/agent-runtime";
-import { type TranscriptItem } from "@pi-web/contracts";
+import {
+  CHAT_IMAGE_MAX_COUNT,
+  type ChatImageRef,
+  type TranscriptItem,
+} from "@pi-web/contracts";
 import { z } from "zod";
 
 /**
@@ -45,6 +49,12 @@ const userMessageSchema = z.object({
   content: z.array(z.unknown()).default([]),
 });
 const textPartSchema = z.object({ type: z.literal("text"), text: z.string() });
+const localImagePartSchema = z.object({
+  type: z.literal("localImage"),
+  path: z.string(),
+});
+
+export type ImageReferenceResolver = (path: string) => ChatImageRef | null;
 
 const agentMessageSchema = z.object({
   type: z.literal("agentMessage"),
@@ -145,6 +155,7 @@ function textParts(content: unknown[]): string {
 export function mapThreadItem(
   raw: unknown,
   atMs: number | null | undefined,
+  resolveImage?: ImageReferenceResolver,
 ): TranscriptItem | null {
   const identified = identifiedSchema.safeParse(raw);
   if (!identified.success) return null;
@@ -152,14 +163,25 @@ export function mapThreadItem(
   const id = identified.data.id;
 
   const user = userMessageSchema.safeParse(raw);
-  if (user.success)
+  if (user.success) {
+    const images =
+      resolveImage === undefined
+        ? []
+        : user.data.content
+            .map((part) => localImagePartSchema.safeParse(part))
+            .filter((part) => part.success)
+            .map((part) => resolveImage(part.data.path))
+            .filter((image): image is ChatImageRef => image !== null)
+            .slice(0, CHAT_IMAGE_MAX_COUNT);
     return {
       id,
       kind: "message",
       role: "user",
       text: clamp(textParts(user.data.content), MESSAGE_TEXT_MAX),
+      ...(images.length === 0 ? {} : { images }),
       timestamp,
     };
+  }
 
   const agent = agentMessageSchema.safeParse(raw);
   if (agent.success)
@@ -315,6 +337,7 @@ const errorNotificationSchema = z.object({
 export function mapNotification(
   method: string,
   params: unknown,
+  resolveImage?: ImageReferenceResolver,
 ): RuntimeEvent | null {
   if (method === "item/completed" || method === "item/started") {
     const parsed = itemLifecycleSchema.safeParse(params);
@@ -322,6 +345,7 @@ export function mapNotification(
     const item = mapThreadItem(
       parsed.data.item,
       parsed.data.completedAtMs ?? parsed.data.startedAtMs ?? null,
+      resolveImage,
     );
     if (item === null) return null;
     // A started item is provisional: the same id is re-sent on completion, so
@@ -376,21 +400,29 @@ export interface TranscriptTurn {
 }
 
 /** Parses Codex turns while retaining the turn boundary needed for paging. */
-export function transcriptTurnsFromThread(raw: unknown): TranscriptTurn[] {
+export function transcriptTurnsFromThread(
+  raw: unknown,
+  resolveImage?: ImageReferenceResolver,
+): TranscriptTurn[] {
   const thread = threadSchema.safeParse(raw);
   if (!thread.success) return [];
   return thread.data.turns.map((turn) => ({
     id: turn.id,
     status: turn.status,
     items: turn.items
-      .map((item) => mapThreadItem(item, null))
+      .map((item) => mapThreadItem(item, null, resolveImage))
       .filter((item): item is TranscriptItem => item !== null),
   }));
 }
 
 /** Flattens a thread's turns into one ordered transcript. */
-export function transcriptFromThread(raw: unknown): TranscriptItem[] {
-  return transcriptTurnsFromThread(raw).flatMap((turn) => turn.items);
+export function transcriptFromThread(
+  raw: unknown,
+  resolveImage?: ImageReferenceResolver,
+): TranscriptItem[] {
+  return transcriptTurnsFromThread(raw, resolveImage).flatMap(
+    (turn) => turn.items,
+  );
 }
 
 /** Describes a thread for the session list, or null if it cannot be trusted. */
